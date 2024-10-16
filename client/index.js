@@ -1,19 +1,11 @@
-"use strict";
-
 // https://web.dev/articles/webrtc-basics
 // https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia
 let frontFacing = true;
 let isRecording = false;
 let isConnected = false;
 
-/** @type MediaStream | undefined */
-let stream = undefined;
-
-/** @type MediaStreamTrack | undefined */
-let videoStream = undefined;
-
-/** @type MediaStreamTrack | undefined */
-let audioStream = undefined;
+/** @type MediaStream | null */
+let stream = null;
 
 /** @type HTMLElement | null */
 let streamButton = null;
@@ -21,7 +13,9 @@ let streamButton = null;
 /** @type HTMLVideoElement | null */
 let videoCanvas = null;
 
-/** @type Socket | null */
+/**
+ * @type {any}
+ */
 let socket = null;
 
 /** @type RTCPeerConnection | null */
@@ -36,11 +30,7 @@ const constraints = {
  * @param {MediaStream} stream
  */
 async function handleSuccess(stream) {
-    videoStream = stream.getVideoTracks()[0];
-    audioStream = stream.getAudioTracks()[0];
-
     console.log("Got stream with constraints:", constraints);
-    console.log(`Using video device: ${videoStream.label}`);
 
     if (!videoCanvas) {
         console.error("No video element found");
@@ -51,6 +41,9 @@ async function handleSuccess(stream) {
     await createPeerConnection();
 }
 
+/**
+ * @param {Error} error
+ */
 function handleError(error) {
     console.error(error);
 
@@ -62,17 +55,20 @@ function handleError(error) {
         );
     } else if (error.name === "NotAllowedError") {
         errorMsg(
-            "NotAllowedError: Permissions have not been granted to use your camera and " +
-                "microphone, you need to allow the page access to your devices in " +
-                "order for the demo to work."
+            "NotAllowedError: The user has denied permission to use media devices"
         );
     }
-    errorMsg(`getUserMedia error: ${error.name}`, error);
+    errorMsg(`Error: ${error.message}`);
 }
 
+/**
+ * @param {string} msg
+ */
 function errorMsg(msg) {
     const errorElement = document.querySelector("#errorMsg");
-    errorElement.innerHTML += `<p>${msg}</p>`;
+    if (errorElement) {
+        errorElement.innerHTML += `<p>${msg}</p>`;
+    }
 }
 /**
  * @param {boolean} [isFlipping=false]
@@ -84,27 +80,22 @@ async function handleStream(isFlipping = false) {
             streamButton.innerHTML = "Start";
         }
 
-        //Release device if already acquired
-        if (videoStream) {
-            console.log("Closing video stream");
-            videoStream.stop();
-            if (videoCanvas) {
-                videoCanvas.srcObject = null;
-            }
+        if (videoCanvas) {
+            videoCanvas.srcObject = null;
         }
 
-        if (audioStream) {
-            audioStream.stop();
-        }
-
-        if (peerConnection) {
+        if (peerConnection !== null) {
             console.log("Closing peer connection");
             const { close } = peerConnection;
             peerConnection.close = function () {
                 stream?.getTracks().forEach((track) => track.stop());
-
-                return close.apply(this, arguments);
+                return close.apply(this);
             };
+
+            peerConnection.close();
+            peerConnection = null;
+            stream = null;
+            socket.emit("end-stream");
         }
 
         if (!isFlipping) {
@@ -144,38 +135,53 @@ function connectToServer() {
 
 async function createPeerConnection() {
     console.debug("[TRACE]Creating Peer connection");
+    if (!socket) {
+        console.error("No socket connection");
+        return;
+    }
+    if (!stream) {
+        console.error("No stream available");
+        return;
+    }
+
     peerConnection = new RTCPeerConnection();
 
     socket.emit("init-rtc");
 
     // Add tracks to the peer connection
-    stream?.getTracks().forEach((track) => {
+    stream.getTracks().forEach((track) => {
         console.log("Adding track: ", track);
         peerConnection?.addTrack(track, stream);
     });
 
-    socket.on("ice-candidate", async (candidate) => {
-        try {
-            console.log("Adding received ice candidate: ", candidate);
-            await peerConnection?.addIceCandidate(candidate);
-        } catch (e) {
-            console.error("Error adding received ice candidate", e);
+    socket.on(
+        "ice-candidate",
+        async (/** @type {RTCIceCandidateInit | undefined} */ candidate) => {
+            try {
+                console.log("Adding received ice candidate: ", candidate);
+                await peerConnection?.addIceCandidate(candidate);
+            } catch (e) {
+                console.error("Error adding received ice candidate", e);
+            }
         }
-    });
+    );
 
-    socket.on("offer", async (offer) => {
-        console.log("Received offer");
-        const remoteDescription = new RTCSessionDescription(offer);
+    socket.on(
+        "offer",
+        async (/** @type {RTCSessionDescriptionInit} */ offer) => {
+            console.log("Received offer");
+            const remoteDescription = new RTCSessionDescription(offer);
 
-        peerConnection?.setRemoteDescription(remoteDescription);
+            peerConnection?.setRemoteDescription(remoteDescription);
 
-        console.debug("[TRACE] creating WebRTC answer");
-        const answer = await peerConnection?.createAnswer();
-        await peerConnection?.setLocalDescription(answer);
+            console.debug("[TRACE] creating WebRTC answer");
+            const answer = await peerConnection?.createAnswer();
+            await peerConnection?.setLocalDescription(answer);
 
-        console.debug("[TRACE] sending WebRTC answer");
-        socket.emit("answer", answer);
-    });
+            console.debug("[TRACE] sending WebRTC answer");
+            socket.emit("answer", answer);
+        }
+    );
 }
 
 window.onload = () => {

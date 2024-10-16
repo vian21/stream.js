@@ -1,22 +1,102 @@
-"use strict";
-
 import fs from "fs";
 import webRTC from "@roamhq/wrtc";
 import ffmpeg from "fluent-ffmpeg";
 import { Server } from "socket.io";
-import { createServer } from "node:http";
+import { createServer } from "node:https";
 import path from "path";
 import { StreamInput } from "fluent-ffmpeg-multistream";
 import { PassThrough } from "stream";
 
 const { RTCVideoSink, RTCAudioSink } = webRTC.nonstandard;
-const VIDEO_OUTPUT_FILE = "./recording.mp4";
-const AUDIO_OUTPUT_FILE = "./recording.wav";
 
-const VIDEO_OUTPUT_SIZE = "320x240";
-
+const VIDEO_OUTPUT_FOLDER = "./videos";
 const STATIC_DIR = "./client";
-let UID = 0;
+
+// ID to identify the stream (counter)
+let streamID = 0;
+
+const SERVER_PORT = process.env.PORT || 3000;
+
+const httpsOptions = {
+    key: fs.readFileSync("./certs/key.pem"),
+    cert: fs.readFileSync("./certs/cert.pem"),
+};
+
+const httpsServer = createServer(httpsOptions, (request, response) => {
+    const url = request.url;
+    if (!url) {
+        response.writeHead(404);
+        response.end("Not found");
+        return;
+    }
+    const filePath = path.join(
+        STATIC_DIR,
+        url === "/" ? "index.html" : url.slice(1)
+    );
+
+    serveStaticFile(request, response, filePath);
+});
+
+httpsServer.listen(SERVER_PORT, () => {
+    console.log(`Server running on port ${SERVER_PORT}`);
+});
+
+const io = new Server(httpsServer);
+
+/**
+ * @type {webRTC.RTCPeerConnection | null}
+ */
+let peerConnection = null;
+
+io.on("connection", (socket) => {
+    console.log(`connected to ${socket.id}`);
+    socket.conn.on("upgrade", (transport) => {
+        console.log(`transport upgraded to ${transport.name}`);
+    });
+
+    socket.on("disconnect", (reason) => {
+        console.log(`disconnected to ${socket.id} due to ${reason}`);
+    });
+
+    // end peerConnection because it takes ~10s for it to propagate to the server after a client disconnects
+    socket.on("end-stream", () => {
+        console.log("Ending stream");
+        closePeerConnection();
+    });
+
+    socket.on("init-rtc", async () => {
+        console.log("Received connect msg");
+        peerConnection = new webRTC.RTCPeerConnection();
+
+        peerConnection.onicecandidate = (event) => {
+            console.log("Candidate event");
+            if (!event?.candidate) {
+                console.error("Ice candidate empty!");
+                return;
+            }
+            socket.emit("ice-candidate", event.candidate);
+        };
+
+        beforeOffer();
+
+        // Create and send offer to the server
+        console.debug("[TRACE] Creating offer");
+        const offer = await peerConnection?.createOffer();
+        await peerConnection?.setLocalDescription(offer);
+
+        console.debug("[TRACE] sending offer");
+        socket.emit("offer", offer);
+    });
+
+    socket.on(
+        "answer",
+        async (/** @type {RTCSessionDescriptionInit} */ answer) => {
+            console.log("Got answer from client");
+            const remoteDescription = new webRTC.RTCSessionDescription(answer);
+            await peerConnection?.setRemoteDescription(remoteDescription);
+        }
+    );
+});
 
 /**
  * @param {import("http").IncomingMessage} _req
@@ -32,7 +112,7 @@ function serveStaticFile(_req, response, filePath) {
             return;
         }
 
-        const extname = path.extname(filePath);
+        const extname = path.extname(String(filePath));
         let contentType = "text/plain";
 
         switch (extname) {
@@ -66,78 +146,11 @@ function serveStaticFile(_req, response, filePath) {
     });
 }
 
-const httpServer = createServer((request, response) => {
-    const url = request.url;
-    const filePath = path.join(
-        STATIC_DIR,
-        url === "/" ? "index.html" : url.slice(1)
-    );
-
-    serveStaticFile(request, response, filePath);
-});
-
-const SERVER_PORT = process.env.PORT || 3000;
-
-httpServer.listen(SERVER_PORT, () => {
-    console.log(`Server running on port ${SERVER_PORT}`);
-});
-
-const io = new Server(httpServer);
-
-/**
- * @type {webRTC.RTCPeerConnection | undefined}
- */
-let peerConnection = undefined;
-
-io.on("connection", (socket) => {
-    console.log(`connected to ${socket.id}`);
-    socket.conn.on("upgrade", (transport) => {
-        console.log(`transport upgraded to ${transport.name}`);
-    });
-
-    socket.on("disconnect", (reason) => {
-        console.log(`disconnected to ${socket.id} due to ${reason}`);
-        peerConnection?.close();
-    });
-
-    socket.on("init-rtc", async () => {
-        console.log("Received connect msg");
-        peerConnection = new webRTC.RTCPeerConnection();
-
-        peerConnection.onicecandidate = (event) => {
-            console.log("Candidate event");
-            if (!event?.candidate) {
-                console.error("Ice candidate empty!");
-                return;
-            }
-            socket.emit("ice-candidate", event.candidate);
-        };
-
-        beforeOffer(peerConnection);
-
-        // Create and send offer to the server
-        console.debug("[TRACE] Creating offer");
-        const offer = await peerConnection?.createOffer();
-        await peerConnection?.setLocalDescription(offer);
-
-        console.debug("[TRACE] sending offer");
-        socket.emit("offer", offer);
-    });
-
-    socket.on(
-        "answer",
-        async (/** @type {RTCSessionDescriptionInit} */ answer) => {
-            console.log("Got answer from client");
-            const remoteDescription = new webRTC.RTCSessionDescription(answer);
-            await peerConnection?.setRemoteDescription(remoteDescription);
-        }
-    );
-});
-
-/**
- * @param {webRTC.RTCPeerConnection} peerConnection
- */
-function beforeOffer(peerConnection) {
+function beforeOffer() {
+    if (!peerConnection) {
+        console.error("Peer connection not created");
+        return;
+    }
     console.debug("[TRACE] Waiting for frames");
     const audioTransceiver = peerConnection.addTransceiver("audio");
     const videoTransceiver = peerConnection.addTransceiver("video");
@@ -145,32 +158,50 @@ function beforeOffer(peerConnection) {
     const audioSink = new RTCAudioSink(audioTransceiver.receiver.track);
     const videoSink = new RTCVideoSink(videoTransceiver.receiver.track);
 
+    /**
+     * @type {{ recordPath: string; size: string; video: PassThrough; audio: PassThrough; recordEnd: boolean; end: boolean }[]}
+     */
     const streams = [];
 
     videoSink.addEventListener(
         "frame",
-        ({ frame: { width, height, data } }) => {
+        (/** @type {any} */ { frame: { width, height, data } }) => {
             const size = width + "x" + height;
             if (!streams[0] || (streams[0] && streams[0].size !== size)) {
-                UID++;
+                streamID++;
 
+                /**
+                 * @type {{ recordPath: string; size: string; video: PassThrough; audio: PassThrough; recordEnd: boolean; end: boolean; proc?: ffmpeg.FfmpegCommand }}
+                 */
                 const stream = {
-                    recordPath: "./recording-" + size + "-" + UID + ".mp4",
+                    recordPath: `${VIDEO_OUTPUT_FOLDER}/tmp-${size}-${streamID}.mp4`,
                     size,
                     video: new PassThrough(),
                     audio: new PassThrough(),
+                    recordEnd: false,
+                    end: false,
+                    proc: undefined,
                 };
 
+                /**
+                 * @param {{ samples: { buffer: ArrayBuffer } }} param0
+                 */
                 const onAudioData = ({ samples: { buffer } }) => {
                     if (!stream.end) {
                         stream.audio.push(Buffer.from(buffer));
                     }
                 };
 
-                audioSink.addEventListener("data", onAudioData);
+                audioSink.addEventListener(
+                    "data",
+                    /** @type {any} */ (onAudioData)
+                );
 
                 stream.audio.on("end", () => {
-                    audioSink.removeEventListener("data", onAudioData);
+                    audioSink.removeEventListener(
+                        "data",
+                        /** @type {any} */ (onAudioData)
+                    );
                 });
 
                 streams.unshift(stream);
@@ -185,6 +216,7 @@ function beforeOffer(peerConnection) {
                     }
                 });
 
+                console.log("stream size", stream.size);
                 stream.proc = ffmpeg()
                     .addInput(StreamInput(stream.video).url)
                     .addInputOptions([
@@ -206,7 +238,7 @@ function beforeOffer(peerConnection) {
                         stream.recordEnd = true;
                         console.log("Stop recording >> ", stream.recordPath);
                     })
-                    .size(VIDEO_OUTPUT_SIZE)
+                    .size(stream.size)
                     .output(stream.recordPath);
 
                 stream.proc.run();
@@ -218,11 +250,10 @@ function beforeOffer(peerConnection) {
 
     const { close } = peerConnection;
     peerConnection.close = function () {
-        console.log("Closing peer connection");
         audioSink.stop();
         videoSink.stop();
 
-        streams.forEach(({ audio, video, end, proc, recordPath }) => {
+        streams.forEach(({ audio, video, end }) => {
             if (!end) {
                 if (audio) {
                     audio.end();
@@ -234,6 +265,10 @@ function beforeOffer(peerConnection) {
         let totalEnd = 0;
         const timer = setInterval(() => {
             streams.forEach((stream) => {
+                const timestamp = new Date()
+                    .toISOString()
+                    .replace(/[:.]/g, "-");
+                const VIDEO_OUTPUT_FILE = `${VIDEO_OUTPUT_FOLDER}/stream-${timestamp}.mp4`;
                 if (stream.recordEnd) {
                     totalEnd++;
                     if (totalEnd === streams.length) {
@@ -247,7 +282,13 @@ function beforeOffer(peerConnection) {
                             })
                             .on("end", () => {
                                 streams.forEach(({ recordPath }) => {
-                                    fs.unlinkSync(recordPath);
+                                    if (fs.existsSync(recordPath)) {
+                                        fs.unlinkSync(recordPath);
+                                    } else {
+                                        console.warn(
+                                            `File not found: ${recordPath}`
+                                        );
+                                    }
                                 });
                                 console.log(
                                     "Merge end. You can play " +
@@ -265,17 +306,29 @@ function beforeOffer(peerConnection) {
             });
         }, 1000);
 
-        return close.apply(this, arguments);
+        return close.apply(this);
     };
 
     peerConnection.oniceconnectionstatechange = (event) => {
         if (
-            peerConnection.iceConnectionState === "disconnected" ||
-            peerConnection.iceConnectionState === "failed" ||
-            peerConnection.iceConnectionState === "closed"
+            peerConnection &&
+            (peerConnection.iceConnectionState === "disconnected" ||
+                peerConnection.iceConnectionState === "failed" ||
+                peerConnection.iceConnectionState === "closed")
         ) {
             console.log("[EVENT] Peer connection closed");
-            peerConnection.close();
+            closePeerConnection();
         }
     };
+}
+
+function closePeerConnection() {
+    if (!peerConnection) {
+        console.error("[closePeerConnection] Peer connection not initialized!");
+        return;
+    }
+    peerConnection.close();
+
+    peerConnection.onconnectionstatechange = null;
+    peerConnection = null;
 }
