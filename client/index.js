@@ -22,7 +22,7 @@ let socket = null;
 let peerConnection = null;
 
 const constraints = {
-    audio: false,
+    audio: true,
     video: { facingMode: frontFacing ? "user" : "environment" },
 };
 
