@@ -1,0 +1,24 @@
+{
+  "name": "stream.js",
+  "version": "1.0.0",
+  "description": "Stream and record phone camera and microphone to server ",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --env-file=.env index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "webRTC",
+    "streaming"
+  ],
+  "author": "Patrick Igiraneza",
+  "license": "ISC",
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@roamhq/wrtc": "^0.8.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "fluent-ffmpeg-multistream": "^1.0.0",
+    "socket.io": "^4.8.0"
+  }
+}

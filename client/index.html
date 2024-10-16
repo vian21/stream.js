@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title></title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="index.css" rel="stylesheet" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="index.js"></script>
+  </head>
+
+  <body>
+    <div class="camera">
+      <video id="videoCanvas" autoplay playsinline>
+        Video stream not available.
+      </video>
+      <button id="streamButton">Start</button>
+      <button id="flipCamera">Flip</button>
+    </div>
+    <div id="errorMsg"></div>
+  </body>
+</html>

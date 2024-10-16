@@ -1,0 +1,9 @@
+body {
+  margin: 0;
+  width: 100%;
+}
+
+#videoCanvas {
+  width: 100%;
+  background: black;
+}
