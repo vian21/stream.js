@@ -23,7 +23,11 @@ let peerConnection = null;
 
 const constraints = {
     audio: true,
-    video: { facingMode: frontFacing ? "user" : "environment" },
+    video: {
+        facingMode: frontFacing ? "user" : "environment",
+        width: 1920,
+        height: 1080,
+    },
 };
 
 /**
