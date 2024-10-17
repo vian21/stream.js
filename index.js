@@ -12,8 +12,10 @@ const { RTCVideoSink, RTCAudioSink } = webRTC.nonstandard;
 const VIDEO_OUTPUT_FOLDER = "./videos";
 const STATIC_DIR = "./client";
 
-// ID to identify the stream (counter)
-let streamID = 0;
+const VIDEO_RESOLUTION = "1920x1080";
+
+/** ID to identify the RecordingStream (counter) recording */
+let streamChunkID = 0;
 
 const SERVER_PORT = process.env.PORT || 3000;
 
@@ -51,16 +53,17 @@ let peerConnection = null;
 io.on("connection", (socket) => {
     console.log(`connected to ${socket.id}`);
     socket.conn.on("upgrade", (transport) => {
-        console.log(`transport upgraded to ${transport.name}`);
+        console.debug(`transport upgraded to ${transport.name}`);
     });
 
     socket.on("disconnect", (reason) => {
-        console.log(`disconnected to ${socket.id} due to ${reason}`);
+        console.log(`Disconnected to ${socket.id} due to ${reason}`);
+        closePeerConnection();
     });
 
     // end peerConnection because it takes ~10s for it to propagate to the server after a client disconnects
     socket.on("end-stream", () => {
-        console.log("Ending stream");
+        console.log(`Ending stream: ${socket.id}`);
         closePeerConnection();
     });
 
@@ -69,7 +72,7 @@ io.on("connection", (socket) => {
         peerConnection = new webRTC.RTCPeerConnection();
 
         peerConnection.onicecandidate = (event) => {
-            console.log("Candidate event");
+            console.debug("[TRACE] Sending candidate event");
             if (!event?.candidate) {
                 console.error("Ice candidate empty!");
                 return;
@@ -146,9 +149,32 @@ function serveStaticFile(_req, response, filePath) {
     });
 }
 
+/**
+ * @type {{ recordPath: string; size: string; video: PassThrough; audio: PassThrough; recordEnd: boolean; end: boolean; proc?: ffmpeg.FfmpegCommand }}
+ */
+/**
+ * Represents a media stream object.
+ *
+ * @typedef {Object} RecordingStream
+ * @property {string} recordPath - The file path where the stream will be recorded.
+ * @property {string} size - The size of the stream.
+ * @property {PassThrough} video - Video buffer.
+ * @property {PassThrough} audio - Audio buffer.
+ * @property {boolean} recordEnd - Indicates whether the FFMPEG recording has ended.
+ * @property {boolean} end - Indicates whether the WebRTC stream has ended.
+ */
+
+/**
+ * This function initializes an audio and video transceiver and starts recording the stream.
+ * It also listens for the end of the peer connection to merge the streams.
+ *
+ * It also registers a custom peer connection closing procedure
+ *
+ * @returns {void}
+ */
 function beforeOffer() {
     if (!peerConnection) {
-        console.error("Peer connection not created");
+        console.error("[DEBUG] Peer connection not initialized!");
         return;
     }
     console.debug("[TRACE] Waiting for frames");
@@ -159,28 +185,30 @@ function beforeOffer() {
     const videoSink = new RTCVideoSink(videoTransceiver.receiver.track);
 
     /**
-     * @type {{ recordPath: string; size: string; video: PassThrough; audio: PassThrough; recordEnd: boolean; end: boolean }[]}
+     * The client can send frames of different sizes, so we need to create a new stream for each .
+     * In the end, we will merge all streams into a single video file.
+     *
+     * @type {RecordingStream[]}
      */
     const streams = [];
+    streamChunkID = 0;
 
+    // Triggerd every time a frame is received from client
     videoSink.addEventListener(
         "frame",
-        (/** @type {any} */ { frame: { width, height, data } }) => {
+        async (/** @type {any} */ { frame: { width, height, data } }) => {
             const size = width + "x" + height;
             if (!streams[0] || (streams[0] && streams[0].size !== size)) {
-                streamID++;
+                streamChunkID++;
 
-                /**
-                 * @type {{ recordPath: string; size: string; video: PassThrough; audio: PassThrough; recordEnd: boolean; end: boolean; proc?: ffmpeg.FfmpegCommand }}
-                 */
+                /** @type {RecordingStream} */
                 const stream = {
-                    recordPath: `${VIDEO_OUTPUT_FOLDER}/tmp-${size}-${streamID}.mp4`,
+                    recordPath: `${VIDEO_OUTPUT_FOLDER}/tmp-${getTimestamp()}-${size}-${streamChunkID}.mp4`,
                     size,
                     video: new PassThrough(),
                     audio: new PassThrough(),
                     recordEnd: false,
                     end: false,
-                    proc: undefined,
                 };
 
                 /**
@@ -204,44 +232,21 @@ function beforeOffer() {
                     );
                 });
 
+                // Add the new stream to the beginning of the array
                 streams.unshift(stream);
 
-                streams.forEach((item) => {
-                    if (item !== stream && !item.end) {
-                        item.end = true;
-                        if (item.audio) {
-                            item.audio.end();
-                        }
-                        item.video.end();
+                // Close previous streams before starting a new one
+                streams.forEach((streamEntry) => {
+                    if (!streamEntry.end && streamEntry !== stream) {
+                        streamEntry.end = true;
+
+                        streamEntry.audio.end();
+                        streamEntry.video.end();
                     }
                 });
 
-                console.log("stream size", stream.size);
-                stream.proc = ffmpeg()
-                    .addInput(StreamInput(stream.video).url)
-                    .addInputOptions([
-                        "-f",
-                        "rawvideo",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-s",
-                        stream.size,
-                        "-r",
-                        "30",
-                    ])
-                    .addInput(StreamInput(stream.audio).url)
-                    .addInputOptions(["-f s16le", "-ar 48k", "-ac 1"])
-                    .on("start", () => {
-                        console.log("Start recording >> ", stream.recordPath);
-                    })
-                    .on("end", () => {
-                        stream.recordEnd = true;
-                        console.log("Stop recording >> ", stream.recordPath);
-                    })
-                    .size(stream.size)
-                    .output(stream.recordPath);
-
-                stream.proc.run();
+                // Start recording the new stream @beginning of the array
+                await recordStream(stream);
             }
 
             streams[0].video.push(Buffer.from(data));
@@ -249,67 +254,30 @@ function beforeOffer() {
     );
 
     const { close } = peerConnection;
+
+    // Override the close method to handle recordings and merging them
     peerConnection.close = function () {
         audioSink.stop();
         videoSink.stop();
 
-        streams.forEach(({ audio, video, end }) => {
-            if (!end) {
-                if (audio) {
-                    audio.end();
-                }
-                video.end();
-            }
+        // Ensure all streams are closed
+        streams.forEach(({ audio, video }) => {
+            audio.end();
+            video.end();
         });
 
-        let totalEnd = 0;
+        /** Checks every second that all streams have ended to merge them */
         const timer = setInterval(() => {
-            streams.forEach((stream) => {
-                const timestamp = new Date()
-                    .toISOString()
-                    .replace(/[:.]/g, "-");
-                const VIDEO_OUTPUT_FILE = `${VIDEO_OUTPUT_FOLDER}/stream-${timestamp}.mp4`;
-                if (stream.recordEnd) {
-                    totalEnd++;
-                    if (totalEnd === streams.length) {
-                        clearTimeout(timer);
+            if (!streams.every((stream) => stream.recordEnd)) return;
 
-                        const mergeProc = ffmpeg()
-                            .on("start", () => {
-                                console.log(
-                                    "Start merging into " + VIDEO_OUTPUT_FILE
-                                );
-                            })
-                            .on("end", () => {
-                                streams.forEach(({ recordPath }) => {
-                                    if (fs.existsSync(recordPath)) {
-                                        fs.unlinkSync(recordPath);
-                                    } else {
-                                        console.warn(
-                                            `File not found: ${recordPath}`
-                                        );
-                                    }
-                                });
-                                console.log(
-                                    "Merge end. You can play " +
-                                        VIDEO_OUTPUT_FILE
-                                );
-                            });
-
-                        streams.forEach(({ recordPath }) => {
-                            mergeProc.addInput(recordPath);
-                        });
-
-                        mergeProc.output(VIDEO_OUTPUT_FILE).run();
-                    }
-                }
-            });
+            clearTimeout(timer);
+            mergeStreams(streams);
         }, 1000);
 
         return close.apply(this);
     };
 
-    peerConnection.oniceconnectionstatechange = (event) => {
+    peerConnection.oniceconnectionstatechange = () => {
         if (
             peerConnection &&
             (peerConnection.iceConnectionState === "disconnected" ||
@@ -327,8 +295,87 @@ function closePeerConnection() {
         console.error("[closePeerConnection] Peer connection not initialized!");
         return;
     }
-    peerConnection.close();
 
-    peerConnection.onconnectionstatechange = null;
+    peerConnection.close();
     peerConnection = null;
+}
+
+function getTimestamp() {
+    return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+/**
+ * @param {RecordingStream} stream
+ * @returns {Promise<void>}
+ */
+async function recordStream(stream) {
+    return new Promise((resolve, reject) => {
+        ffmpeg()
+            .addInput(StreamInput(stream.video).url)
+            .addInputOptions([
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "yuv420p",
+                "-s",
+                stream.size,
+                "-r",
+                "30",
+            ])
+            .addInput(StreamInput(stream.audio).url)
+            .addInputOptions(["-f s16le", "-ar 48k", "-ac 1"])
+            .on("start", (command) => {
+                console.log("Start recording >> ", stream.recordPath);
+                console.log(command);
+            })
+            .on("error", (err, stdout, stderr) => {
+                console.error("Error processing video:", err.message);
+                console.error("FFmpeg output:", stdout);
+                console.error("FFmpeg error:", stderr);
+                reject(err);
+            })
+            .on("end", () => {
+                stream.recordEnd = true;
+                console.log("Stop recording >> ", stream.recordPath);
+                resolve();
+            })
+            .size(VIDEO_RESOLUTION)
+            .output(stream.recordPath)
+            .run();
+    });
+}
+
+/**
+ * @param {RecordingStream[]} streams
+ */
+function mergeStreams(streams) {
+    const VIDEO_OUTPUT_FILE = `${VIDEO_OUTPUT_FOLDER}/stream-${getTimestamp()}.mp4`;
+    const mergeProc = ffmpeg();
+
+    mergeProc
+        .on("start", (command) => {
+            console.log("Start merging into", VIDEO_OUTPUT_FILE);
+            console.log(command);
+        })
+        .on("error", (err, stdout, stderr) => {
+            console.error("Error processing video:", err.message);
+            console.error("FFmpeg output:", stdout);
+            console.error("FFmpeg error:", stderr);
+        })
+        .on("end", () => {
+            streams.forEach(({ recordPath }) => {
+                if (fs.existsSync(recordPath)) {
+                    fs.unlinkSync(recordPath);
+                } else {
+                    console.warn(`File not found: ${recordPath}`);
+                }
+            });
+            console.log("Merge end. You can play: " + VIDEO_OUTPUT_FILE);
+        });
+
+    streams.forEach(({ recordPath }) => {
+        mergeProc.addInput(recordPath);
+    });
+
+    mergeProc.output(VIDEO_OUTPUT_FILE).run();
 }

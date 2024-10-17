@@ -25,6 +25,7 @@ const constraints = {
     audio: true,
     video: {
         facingMode: frontFacing ? "user" : "environment",
+        frameRate: 30,
         width: 1920,
         height: 1080,
     },
@@ -48,7 +49,7 @@ async function handleSuccess(stream) {
 /**
  * @param {Error} error
  */
-function handleError(error) {
+function displayError(error) {
     console.error(error);
 
     if (error.name === "OverconstrainedError") {
@@ -116,12 +117,13 @@ async function handleStream(isFlipping = false) {
             streamButton.innerHTML = "Stop";
         }
     } catch (e) {
-        console.log(e);
-        handleError(e);
+        // @ts-ignore
+        displayError(e);
     }
 }
 
 function connectToServer() {
+    // @ts-ignore
     socket = io();
 
     socket.on("connect", () => {
@@ -155,6 +157,7 @@ async function createPeerConnection() {
     // Add tracks to the peer connection
     stream.getTracks().forEach((track) => {
         console.log("Adding track: ", track);
+        // @ts-ignore
         peerConnection?.addTrack(track, stream);
     });
 
@@ -200,6 +203,9 @@ window.onload = () => {
         frontFacing = !frontFacing;
         constraints.video = {
             facingMode: frontFacing ? "user" : "environment",
+            frameRate: 30,
+            width: 1920,
+            height: 1080,
         };
         handleStream(true);
     });
