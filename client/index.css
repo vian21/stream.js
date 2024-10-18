@@ -1,9 +1,44 @@
-body {
-  margin: 0;
-  width: 100%;
+body,
+html {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    color: white;
+    font-size: 16pt;
 }
 
+#camera {
+    width: 100%;
+    height: 100%;
+}
 #videoCanvas {
-  width: 100%;
-  background: black;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background: black;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+#streamButton {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: red;
+    padding: 30px;
+    border-radius: 50%;
+    border: none;
+    color: white;
+    font-size: 12pt;
+}
+
+#flipCamera {
+    position: absolute;
+    background-color: transparent;
+    top: 20px;
+    right: 20px;
+    padding: 10px;
+    color: white;
+    border: none;
+    border-radius: 50%;
 }
