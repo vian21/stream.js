@@ -268,13 +268,14 @@ function beforeOffer() {
             video.end();
         });
 
-        /** Checks every second that all streams have ended to merge them */
+        /** Checks periodically that all streams have ended to merge them */
         const timer = setInterval(() => {
+            console.log("Checking if all streams have ended");
             if (!streams.every((stream) => stream.recordEnd)) return;
 
             clearTimeout(timer);
             mergeStreams(streams);
-        }, 1000);
+        }, 3000);
 
         return close.apply(this);
     };
