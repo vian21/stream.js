@@ -203,7 +203,7 @@ function beforeOffer() {
 
                 /** @type {RecordingStream} */
                 const stream = {
-                    recordPath: `${VIDEO_OUTPUT_FOLDER}/tmp-${getTimestamp()}-${size}-${streamChunkID}.mp4`,
+                    recordPath: `${VIDEO_OUTPUT_FOLDER}/tmp-${getTimestamp()}-${size}-${streamChunkID}.webm`,
                     size,
                     video: new PassThrough(),
                     audio: new PassThrough(),
@@ -249,7 +249,9 @@ function beforeOffer() {
                 await recordStream(stream);
             }
 
-            streams[0].video.push(Buffer.from(data));
+            if (streams[0].video.writable) {
+                streams[0].video.push(Buffer.from(data));
+            }
         }
     );
 
@@ -313,14 +315,12 @@ async function recordStream(stream) {
         ffmpeg()
             .addInput(StreamInput(stream.video).url)
             .addInputOptions([
-                "-f",
-                "rawvideo",
-                "-pix_fmt",
-                "yuv420p",
-                "-s",
-                stream.size,
-                "-r",
-                "30",
+                "-re",
+                "-pix_fmt yuv420p",
+                "-vcodec rawvideo",
+                "-f rawvideo",
+                `-s ${stream.size}`,
+                "-r 30",
             ])
             .addInput(StreamInput(stream.audio).url)
             .addInputOptions(["-f s16le", "-ar 48k", "-ac 1"])
@@ -350,6 +350,8 @@ async function recordStream(stream) {
  */
 function mergeStreams(streams) {
     const VIDEO_OUTPUT_FILE = `${VIDEO_OUTPUT_FOLDER}/stream-${getTimestamp()}.mp4`;
+    const CONCAT_FILE = `${VIDEO_OUTPUT_FOLDER}/stream_list.txt`;
+
     const mergeProc = ffmpeg();
 
     mergeProc
@@ -370,12 +372,29 @@ function mergeStreams(streams) {
                     console.warn(`File not found: ${recordPath}`);
                 }
             });
+
+            if (fs.existsSync(CONCAT_FILE)) {
+                fs.unlinkSync(CONCAT_FILE);
+            }
             console.log("Merge end. You can play: " + VIDEO_OUTPUT_FILE);
         });
 
-    streams.forEach(({ recordPath }) => {
-        mergeProc.addInput(recordPath);
+    let files = "";
+    streams.reverse().forEach(({ recordPath }) => {
+        files += `file '${path.basename(recordPath)}'\n`;
     });
 
-    mergeProc.output(VIDEO_OUTPUT_FILE).run();
+    try {
+        fs.writeFileSync(CONCAT_FILE, files);
+    } catch (e) {
+        console.error("[MergeStreams] Error writing to concat file:", e);
+        return;
+    }
+
+    mergeProc
+        .input(CONCAT_FILE)
+        .inputOptions(["-f concat", "-safe 0"])
+        .output(VIDEO_OUTPUT_FILE)
+        .outputOptions(["-c copy"])
+        .run();
 }
