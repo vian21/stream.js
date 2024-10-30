@@ -1,11 +1,11 @@
-import fs from "fs";
+import fs from "node:fs";
 import webRTC from "@roamhq/wrtc";
 import ffmpeg from "fluent-ffmpeg";
 import { Server } from "socket.io";
 import { createServer } from "node:https";
-import path from "path";
+import path from "node:path";
 import { StreamInput } from "fluent-ffmpeg-multistream";
-import { PassThrough } from "stream";
+import { PassThrough } from "node:stream";
 
 const { RTCVideoSink, RTCAudioSink } = webRTC.nonstandard;
 
@@ -270,7 +270,6 @@ function beforeOffer() {
 
         /** Checks periodically that all streams have ended to merge them */
         const timer = setInterval(() => {
-            console.log("Checking if all streams have ended");
             if (!streams.every((stream) => stream.recordEnd)) return;
 
             clearTimeout(timer);
