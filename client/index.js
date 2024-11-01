@@ -7,6 +7,9 @@ let isConnected = false;
 /** @type MediaStream | null */
 let stream = null;
 
+/** @type MediaRecorder | null */
+let recorder = null;
+
 /** @type HTMLElement | null */
 let streamButton = null;
 
@@ -18,16 +21,30 @@ let videoCanvas = null;
  */
 let socket = null;
 
-/** @type RTCPeerConnection | null */
-let peerConnection = null;
+const Kbits = 1e3;
+const Mbits = 1e6;
 
+const AUDIO_BITRATE = {
+    LOSSLESS: 1411.2 * Kbits,
+    SURROUND: 512 * Kbits,
+    STEREO: 384 * Kbits,
+    MONO: 128 * Kbits,
+};
+
+const VIDEO_BITRATE = {
+    "8K": 100 * Mbits,
+    "4K": 44 * Mbits,
+    "2K": 20 * Mbits,
+    "1080p": 10 * Mbits,
+    "720p": 6.5 * Mbits,
+};
 const constraints = {
     audio: true,
     video: {
         facingMode: frontFacing ? "user" : "environment",
         frameRate: 30,
-        width: 1920,
-        height: 1080,
+        width: { ideal: 4096 },
+        height: { ideal: 2160 },
     },
 };
 
@@ -38,12 +55,42 @@ async function handleSuccess(stream) {
     console.log("Got stream with constraints:", constraints);
 
     if (!videoCanvas) {
-        console.error("No video element found");
+        console.error("[ERROR] No video element found");
+        tearDown();
         return;
     }
     videoCanvas.srcObject = stream;
 
-    await createPeerConnection();
+    const encoding = MediaRecorder.isTypeSupported("video/webm")
+        ? "video/webm"
+        : "video/mp4";
+
+    socket.emit("start-stream", encoding);
+
+    try {
+        // https://support.google.com/youtube/answer/1722171#zippy=%2Cbitrate
+        recorder = new MediaRecorder(stream, {
+            mimeType: encoding,
+            videoBitsPerSecond: VIDEO_BITRATE["1080p"],
+            audioBitsPerSecond: AUDIO_BITRATE.MONO,
+        });
+    } catch (error) {
+        socket.emit("end-stream");
+        alert(error);
+        tearDown();
+        return;
+    }
+
+    recorder.ondataavailable = (event) => {
+        socket.emit("data", event.data);
+    };
+
+    recorder.onstop = (event) => {
+        console.log("[TRACE] stopping recording");
+        socket.emit("end-stream");
+    };
+
+    recorder.start(1000);
 }
 
 /**
@@ -75,37 +122,35 @@ function errorMsg(msg) {
         errorElement.innerHTML += `<p>${msg}</p>`;
     }
 }
-/**
- * @param {boolean} [isFlipping=false]
- * */
-async function handleStream(isFlipping = false) {
+
+function tearDown() {
+    console.log("[TRACE] Tearing down stream");
+    if (recorder) {
+        recorder.stop();
+        const tracks = stream?.getTracks();
+
+        tracks?.forEach((track) => {
+            track.stop();
+        });
+    }
+
+    isRecording = false;
+    stream = null;
+
+    if (streamButton) {
+        streamButton.innerHTML = "Start";
+    }
+
+    if (videoCanvas) {
+        videoCanvas.srcObject = null;
+    }
+}
+
+async function startRecording() {
+    console.log(`[TRACE] ${isRecording ? "Stopping " : "Starting "} stream`);
     if (isRecording) {
-        isRecording = false;
-        if (streamButton) {
-            streamButton.innerHTML = "Start";
-        }
-
-        if (videoCanvas) {
-            videoCanvas.srcObject = null;
-        }
-
-        if (peerConnection !== null) {
-            console.log("Closing peer connection");
-            const { close } = peerConnection;
-            peerConnection.close = function () {
-                stream?.getTracks().forEach((track) => track.stop());
-                return close.apply(this);
-            };
-
-            peerConnection.close();
-            peerConnection = null;
-            stream = null;
-            socket.emit("end-stream");
-        }
-
-        if (!isFlipping) {
-            return;
-        }
+        tearDown();
+        return;
     }
 
     try {
@@ -139,74 +184,25 @@ function connectToServer() {
     });
 }
 
-async function createPeerConnection() {
-    console.debug("[TRACE]Creating Peer connection");
-    if (!socket) {
-        console.error("No socket connection");
-        return;
-    }
-    if (!stream) {
-        console.error("No stream available");
-        return;
-    }
-
-    peerConnection = new RTCPeerConnection();
-
-    socket.emit("init-rtc");
-
-    // Add tracks to the peer connection
-    stream.getTracks().forEach((track) => {
-        console.log("Adding track: ", track);
-        // @ts-ignore
-        peerConnection?.addTrack(track, stream);
-    });
-
-    socket.on(
-        "ice-candidate",
-        async (/** @type {RTCIceCandidateInit | undefined} */ candidate) => {
-            try {
-                console.log("Adding received ice candidate: ", candidate);
-                await peerConnection?.addIceCandidate(candidate);
-            } catch (e) {
-                console.error("Error adding received ice candidate", e);
-            }
-        }
-    );
-
-    socket.on(
-        "offer",
-        async (/** @type {RTCSessionDescriptionInit} */ offer) => {
-            console.log("Received offer");
-            const remoteDescription = new RTCSessionDescription(offer);
-
-            peerConnection?.setRemoteDescription(remoteDescription);
-
-            console.debug("[TRACE] creating WebRTC answer");
-            const answer = await peerConnection?.createAnswer();
-            await peerConnection?.setLocalDescription(answer);
-
-            console.debug("[TRACE] sending WebRTC answer");
-            socket.emit("answer", answer);
-        }
-    );
-}
-
 window.onload = () => {
-    connectToServer();
     videoCanvas = document.querySelector("#videoCanvas");
     streamButton = document.querySelector("#streamButton");
 
-    streamButton?.addEventListener("click", () => handleStream());
+    streamButton?.addEventListener("click", () => startRecording());
 
     const flipCameraButton = document.querySelector("#flipCamera");
     flipCameraButton?.addEventListener("click", () => {
+        console.log("[TRACE] Flipping camera");
         frontFacing = !frontFacing;
+        // TODO: find a better way to flip the camera without interupting the stream
         constraints.video = {
             facingMode: frontFacing ? "user" : "environment",
             frameRate: 30,
-            width: 1920,
-            height: 1080,
+            width: { ideal: 4096 },
+            height: { ideal: 2160 },
         };
-        handleStream(true);
+        startRecording();
     });
+
+    connectToServer();
 };
