@@ -58,10 +58,6 @@ io.on("connection", (socket) => {
     socket.on("start-stream", (encoding) => {
         console.log(`starting stream: ${socket.id}`);
         const stream = startRecording(socket.id, encoding.split("/")[1]);
-        if (!stream) {
-            console.error(`[ERROR] Could not start recording for ${socket.id}`);
-            return;
-        }
         clients.set(socket.id, stream);
     });
 
@@ -76,12 +72,12 @@ io.on("connection", (socket) => {
     });
 
     socket.on("end-stream", () => {
-        console.log(`Ending stream: ${socket.id}`);
+        console.log(`[INFO] Ending stream: ${socket.id}`);
         endStream(socket.id);
     });
 
     socket.on("disconnect", (reason) => {
-        console.log(`Disconnected to ${socket.id} due to ${reason}`);
+        console.error(`Disconnected to ${socket.id} due to ${reason}`);
         endStream(socket.id);
     });
 });
@@ -92,9 +88,11 @@ io.on("connection", (socket) => {
 function endStream(id) {
     const client = clients.get(id);
     if (!client) {
-        console.error(`[ERROR] Could not find client ${id}`);
+        console.log(`[INFO] Client ${id} was not streaming`);
         return;
     }
+
+    console.log("[INFO] Merging stream segments together ...");
     client.data.end();
     clients.delete(id);
 }
@@ -161,7 +159,7 @@ function serveStaticFile(_req, response, filePath) {
 /**
  * @param {string} id - Client ID
  * @param {string} encoding - The video encoding of the media recorder data.
- * @returns {RecordingStream | null}
+ * @returns {RecordingStream}
  * */
 function startRecording(id, encoding) {
     /** @type {RecordingStream} */
@@ -193,7 +191,7 @@ function recordStream(stream, mime) {
         .addInput(stream.data)
         .addInputOptions([`-f ${mime}`])
         .on("start", (command) => {
-            console.log("Start recording >> ", stream.recordPath);
+            console.log("[Starting] recording >> ", stream.recordPath);
             console.log(command);
         })
         .on("error", (err, stdout, stderr) => {
@@ -203,13 +201,13 @@ function recordStream(stream, mime) {
         })
         .on("end", () => {
             stream.recordEnd = true;
-            console.log("Stop recording >> ", stream.recordPath);
+            console.log("[Stopping] recording >> ", stream.recordPath);
         })
         .output(stream.recordPath)
         .outputOptions([
-            "-preset ultrafast", // Encoding speed for real-time
+            "-preset ultrafast", // Encoding:compression speed (ultrafast->superfast->veryfast->faster->fast->medium->slow->slower->veryslow)
             "-tune zerolatency",
-            "-vcodec libx264",
+            "-vcodec libx264", // libx265 uses less space but is slower. (https://www.reddit.com/r/ffmpeg/comments/idr0ud/comment/g2bff2f/)
             "-movflags frag_keyframe+empty_moov",
         ]);
 

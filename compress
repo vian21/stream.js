@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Compress a video file using ffmpeg with libx265 codec
+# Usage: compress <video_path>
+#
+show_help() {
+    echo "Compress a video file using ffmpeg with libx265 codec"
+    echo "Usage: $(basename "$0") [-h] [-s <speed>] <video_path>"
+    echo "  -h  Show this help message"
+    echo "  -s  Set compression speed (1-7):"
+    echo "      1 - ultrafast (default)"
+    echo "      2 - superfast"
+    echo "      3 - veryfast"
+    echo "      4 - faster"
+    echo "      5 - fast"
+    echo "      6 - medium"
+    echo "      7 - slow"
+}
+
+if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+fi
+
+preset="ultrafast"
+
+while getopts ":hs:" opt; do
+    case ${opt} in
+        h )
+            show_help
+            exit 0
+            ;;
+        s )
+            case ${OPTARG} in
+                1) preset="ultrafast" ;;
+                2) preset="superfast" ;;
+                3) preset="veryfast" ;;
+                4) preset="faster" ;;
+                5) preset="fast" ;;
+                6) preset="medium" ;;
+                7) preset="slow" ;;
+                *)
+                    echo "Invalid preset option: $OPTARG"
+                    show_help
+                    exit 1
+                    ;;
+            esac
+            ;;
+        \? )
+            echo "Invalid option: -$OPTARG" 1>&2
+            show_help
+            exit 1
+            ;;
+        : )
+            echo "Invalid option: -$OPTARG requires an argument" 1>&2
+            show_help
+            exit 1
+            ;;
+    esac
+done
+shift "$((OPTIND -1))"
+
+video_path="$1"
+
+if [[ ! -f "$video_path" ]]; then
+    echo "Error: '$video_path' not found."
+    exit 1
+fi
+
+output_path="${video_path%.*}_compressed.${video_path##*.}"
+
+echo "ffmpeg -i \"$video_path\" -c:v libx265 -crf 28 -preset \"$preset\" -c:a copy \"$output_path\""
+ffmpeg -i "$video_path" -c:v libx265 -crf 28 -preset "$preset" -c:a copy "$output_path"
+
+if [[ $? -eq 0 ]]; then
+    echo "Compression completed successfully: $output_path"
+else
+    echo "Error: Compression failed."
+    exit 1
+fi
