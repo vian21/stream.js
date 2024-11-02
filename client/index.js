@@ -2,7 +2,6 @@
 // https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia
 let frontFacing = true;
 let isRecording = false;
-let isConnected = false;
 
 /** @type MediaStream | null */
 let stream = null;
@@ -175,12 +174,13 @@ function connectToServer() {
         console.log(
             `connected with transport ${socket.io.engine.transport.name}`
         );
-        isConnected = true;
     });
 
     socket.on("disconnect", (/** @type {String} */ reason) => {
         console.log(`disconnect due to ${reason}`);
-        isConnected = false;
+        if (isRecording) {
+            tearDown();
+        }
     });
 }
 
