@@ -3,11 +3,13 @@
 let frontFacing = true;
 let isRecording = false;
 
-/** @type MediaStream | null */
-let stream = null;
-
 /** @type MediaRecorder | null */
 let recorder = null;
+
+/**
+ * @type {MediaSwitcher}
+ */
+const mediaSwitcher = new MediaSwitcher();
 
 /** @type HTMLElement | null */
 let streamButton = null;
@@ -50,7 +52,7 @@ const constraints = {
 /**
  * @param {MediaStream} stream
  */
-async function handleSuccess(stream) {
+async function startRecording(stream) {
     console.log("Got stream with constraints:", constraints);
 
     if (!videoCanvas) {
@@ -58,7 +60,6 @@ async function handleSuccess(stream) {
         tearDown();
         return;
     }
-    videoCanvas.srcObject = stream;
 
     const encoding = MediaRecorder.isTypeSupported("video/webm")
         ? "video/webm"
@@ -67,29 +68,36 @@ async function handleSuccess(stream) {
     socket.emit("start-stream", encoding);
 
     try {
+        const switcher_stream = await mediaSwitcher.initialize(stream);
+        console.log("[TRACE] MediaSwitcher initialized");
+
+        // https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/dataavailable_event
+        // [Important] Data has to be consumed from the stream for the `dataavailable` event to trigger
+        videoCanvas.srcObject = switcher_stream;
+
         // https://support.google.com/youtube/answer/1722171#zippy=%2Cbitrate
-        recorder = new MediaRecorder(stream, {
+        recorder = new MediaRecorder(switcher_stream, {
             mimeType: encoding,
             videoBitsPerSecond: VIDEO_BITRATE["1080p"],
             audioBitsPerSecond: AUDIO_BITRATE.MONO,
         });
+
+        recorder.ondataavailable = (event) => {
+            socket.emit("data", event.data);
+        };
+
+        recorder.onstop = (event) => {
+            socket.emit("end-stream");
+        };
+
+        recorder.start(1000);
+        console.log("[TRACE] MediaRecorder started", recorder.state);
     } catch (error) {
         socket.emit("end-stream");
         alert(error);
         tearDown();
         return;
     }
-
-    recorder.ondataavailable = (event) => {
-        socket.emit("data", event.data);
-    };
-
-    recorder.onstop = (event) => {
-        console.log("[TRACE] stopping recording");
-        socket.emit("end-stream");
-    };
-
-    recorder.start(1000);
 }
 
 /**
@@ -126,15 +134,11 @@ function tearDown() {
     console.log("[TRACE] Tearing down stream");
     if (recorder) {
         recorder.stop();
-        const tracks = stream?.getTracks();
-
-        tracks?.forEach((track) => {
-            track.stop();
-        });
+        mediaSwitcher.close();
     }
 
     isRecording = false;
-    stream = null;
+    recorder = null;
 
     if (streamButton) {
         streamButton.innerHTML = "Start";
@@ -145,7 +149,7 @@ function tearDown() {
     }
 }
 
-async function startRecording() {
+async function startStream() {
     console.log(`[TRACE] ${isRecording ? "Stopping " : "Starting "} stream`);
     if (isRecording) {
         tearDown();
@@ -153,8 +157,8 @@ async function startRecording() {
     }
 
     try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        handleSuccess(stream);
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        await startRecording(stream);
 
         isRecording = true;
         if (streamButton) {
@@ -184,25 +188,34 @@ function connectToServer() {
     });
 }
 
+async function flipCamera() {
+    if (!isRecording || !videoCanvas) {
+        return;
+    }
+    console.log("[TRACE] Flipping camera");
+
+    frontFacing = !frontFacing;
+    constraints.video.facingMode = frontFacing ? "user" : "environment";
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log("Got stream with constraints:", constraints);
+
+        mediaSwitcher.changeStream(stream);
+    } catch (error) {
+        console.error("[ERROR] changing camera:", error);
+        tearDown();
+    }
+}
+
 window.onload = () => {
     videoCanvas = document.querySelector("#videoCanvas");
     streamButton = document.querySelector("#streamButton");
 
-    streamButton?.addEventListener("click", () => startRecording());
+    streamButton?.addEventListener("click", () => startStream());
 
     const flipCameraButton = document.querySelector("#flipCamera");
-    flipCameraButton?.addEventListener("click", () => {
-        console.log("[TRACE] Flipping camera");
-        frontFacing = !frontFacing;
-        // TODO: find a better way to flip the camera without interupting the stream
-        constraints.video = {
-            facingMode: frontFacing ? "user" : "environment",
-            frameRate: 30,
-            width: { ideal: 4096 },
-            height: { ideal: 2160 },
-        };
-        startRecording();
-    });
+    flipCameraButton?.addEventListener("click", () => flipCamera());
 
     connectToServer();
 };
