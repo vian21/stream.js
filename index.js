@@ -1,10 +1,13 @@
+import os from "node:os";
 import fs from "node:fs";
+import path from "node:path";
+
+import { Domain } from "node:domain";
+import { PassThrough } from "node:stream";
+import { createServer } from "node:https";
+
 import ffmpeg from "fluent-ffmpeg";
 import { Server } from "socket.io";
-import { createServer } from "node:https";
-import path from "node:path";
-import { PassThrough } from "node:stream";
-import { Domain } from "node:domain";
 
 const VIDEO_OUTPUT_FOLDER = "./videos";
 const STATIC_DIR = "./client";
@@ -38,7 +41,29 @@ domain.on("error", (err) => {
 
 domain.run(() => {
     httpsServer.listen(SERVER_PORT, () => {
-        console.log(`Server running on port ${SERVER_PORT}`);
+        /**
+         * @type {{ network: string; ip: string; }[]}
+         */
+        const addresses = [];
+
+        Object.values(os.networkInterfaces()).forEach((interfaces) => {
+            interfaces?.map((host) => {
+                if (host.family === "IPv4") {
+                    addresses.push({
+                        network: host.internal ? "Local" : "Network",
+                        ip: host.address,
+                    });
+                }
+            });
+        });
+
+        console.log(`Streaming client available at:`);
+        addresses.forEach((address) => {
+            console.log(
+                `➡️${address.network}: https://${address.ip}:${SERVER_PORT}`
+            );
+        });
+        console.log("\nPress Ctrl+C to stop the server \n");
     });
 });
 

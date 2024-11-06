@@ -39,6 +39,7 @@ const VIDEO_BITRATE = {
     "1080p": 10 * Mbits,
     "720p": 6.5 * Mbits,
 };
+
 const constraints = {
     audio: true,
     video: {
@@ -47,6 +48,12 @@ const constraints = {
         width: { ideal: 4096 },
         height: { ideal: 2160 },
     },
+};
+
+const recorderOptions = {
+    mimeType: "video/webm",
+    videoBitsPerSecond: VIDEO_BITRATE["1080p"],
+    audioBitsPerSecond: AUDIO_BITRATE.MONO,
 };
 
 /**
@@ -61,14 +68,17 @@ async function startRecording(stream) {
         return;
     }
 
-    const encoding = MediaRecorder.isTypeSupported("video/webm")
-        ? "video/webm"
-        : "video/mp4";
+    if (!MediaRecorder.isTypeSupported("video/webm")) {
+        recorderOptions.mimeType = "video/mp4";
+    }
 
-    socket.emit("start-stream", encoding);
+    socket.emit("start-stream", recorderOptions.mimeType);
 
     try {
-        const switcher_stream = await mediaSwitcher.initialize(stream);
+        const switcher_stream = await mediaSwitcher.initialize(
+            stream,
+            recorderOptions
+        );
         console.log("[TRACE] MediaSwitcher initialized");
 
         // https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/dataavailable_event
@@ -76,25 +86,21 @@ async function startRecording(stream) {
         videoCanvas.srcObject = switcher_stream;
 
         // https://support.google.com/youtube/answer/1722171#zippy=%2Cbitrate
-        recorder = new MediaRecorder(switcher_stream, {
-            mimeType: encoding,
-            videoBitsPerSecond: VIDEO_BITRATE["1080p"],
-            audioBitsPerSecond: AUDIO_BITRATE.MONO,
-        });
+        recorder = new MediaRecorder(switcher_stream, recorderOptions);
 
         recorder.ondataavailable = (event) => {
             socket.emit("data", event.data);
         };
 
-        recorder.onstop = (event) => {
+        recorder.onstop = () => {
             socket.emit("end-stream");
         };
 
         recorder.start(1000);
-        console.log("[TRACE] MediaRecorder started", recorder.state);
+        console.log("[TRACE] MediaRecorder started");
     } catch (error) {
         socket.emit("end-stream");
-        alert(error);
+        console.error(error);
         tearDown();
         return;
     }
@@ -167,6 +173,7 @@ async function startStream() {
     } catch (e) {
         // @ts-ignore
         displayError(e);
+        console.error("[ERROR]", e);
     }
 }
 
@@ -198,8 +205,13 @@ async function flipCamera() {
     constraints.video.facingMode = frontFacing ? "user" : "environment";
 
     try {
+        mediaSwitcher.getCurrentStreamTracks().forEach(async (track) => {
+            console.log(`[TRACE] Stopping ${track?.kind} track`);
+            track?.stop();
+        });
+
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log("Got stream with constraints:", constraints);
+        console.log("[INFO] Got new stream with constraints:", constraints);
 
         mediaSwitcher.changeStream(stream);
     } catch (error) {

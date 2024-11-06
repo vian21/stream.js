@@ -34,8 +34,6 @@ class MediaSwitcher {
     //  Change the entire input stream
     changeStream = (/** @type {MediaStream} */ stream) => {
         if (
-            !stream ||
-            stream.constructor.name !== "MediaStream" ||
             !this.inputPeerConnection ||
             !this.outputPeerConnection ||
             this.inputPeerConnection.connectionState !== "connected" ||
@@ -43,17 +41,18 @@ class MediaSwitcher {
         )
             return;
 
-        stream.getTracks().forEach((track) => {
-            this.changeTrack(track);
+        console.log("[TRACE] Changing stream");
+
+        stream.getTracks().forEach(async (track) => {
+            await this.changeTrack(track);
         });
     };
 
     //  Change one input track
-    changeTrack = (/** @type {MediaStreamTrack} */ track) => {
+    changeTrack = async (
+        /** @type {MediaStreamTrack | CanvasCaptureMediaStreamTrack} */ track
+    ) => {
         if (
-            !track ||
-            (track.constructor.name !== "MediaStreamTrack" &&
-                track.constructor.name !== "CanvasCaptureMediaStreamTrack") ||
             !this.inputPeerConnection ||
             !this.outputPeerConnection ||
             this.inputPeerConnection.connectionState !== "connected" ||
@@ -61,19 +60,31 @@ class MediaSwitcher {
         )
             return;
 
-        const senders = this.inputPeerConnection
+        const sender = this.inputPeerConnection
             .getSenders()
             .filter(
                 (sender) => !!sender.track && sender.track.kind === track.kind
             )[0];
-        if (!!senders) {
-            senders.track?.stop();
-            senders.replaceTrack(track);
+        if (!!sender) {
+            console.log(`[TRACE] Replacing ${sender.track?.kind} track`);
+            try {
+                await sender.replaceTrack(track);
+            } catch (e) {
+                console.error(e);
+            }
+            console.log(track);
         }
     };
 
+    getCurrentStreamTracks = () => {
+        return this.inputPeerConnection?.getSenders().map((sender) => sender.track) || [];
+    }
+
     //  Call this to, you guessed, initialize the class
-    initialize = async function (/** @type {MediaStream} */ inputStream) {
+    initialize = async function (
+        /** @type {MediaStream} */ inputStream,
+        /** @type {MediaRecorderOptions} */ constraints
+    ) {
         return new Promise(async (resolve, reject) => {
             //  ---------------------------------------------------------------------------------------
             //  Create input RTC peer connection
@@ -103,27 +114,12 @@ class MediaSwitcher {
             //  Get video source
             //  ---------------------------------------------------------------------------------------
 
-            //  Create input stream
-            if (
-                !inputStream ||
-                inputStream.constructor.name !== "MediaStream"
-            ) {
-                reject(new Error("Input stream is nonexistent or invalid."));
-                return;
-            }
-
             //  Add stream to input peer
             inputStream.getTracks().forEach((track) => {
                 if (track.kind === "video")
-                    this.videoSender = this.inputPeerConnection.addTrack(
-                        track,
-                        inputStream
-                    );
+                    this.inputPeerConnection.addTrack(track, inputStream);
                 if (track.kind === "audio")
-                    this.audioSender = this.inputPeerConnection.addTrack(
-                        track,
-                        inputStream
-                    );
+                    this.inputPeerConnection.addTrack(track, inputStream);
             });
 
             //  ---------------------------------------------------------------------------------------
@@ -150,9 +146,6 @@ class MediaSwitcher {
         }
 
         if (this.outputPeerConnection) {
-            this.outputPeerConnection.getSenders().forEach((sender) => {
-                sender.track?.stop();
-            });
             this.outputPeerConnection.close();
             this.outputPeerConnection = null;
         }
