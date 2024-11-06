@@ -229,8 +229,10 @@ async function startStreamPreview() {
     videoCanvas.srcObject = stream;
 }
 
-// Function to handle visibility change
-function handleVisibilityChange() {
+/**
+ * @param {boolean} isRecording
+ */
+function handleVisibilityChange(isRecording) {
     if (isRecording) return;
 
     if (document.hidden) {
@@ -256,7 +258,7 @@ window.onload = async () => {
     startStreamPreview();
 
     // stop preview when tab is inactive
-    document.onvisibilitychange = handleVisibilityChange;
+    document.onvisibilitychange = () => handleVisibilityChange(isRecording);
 
     connectToServer();
 };
