@@ -1,10 +1,13 @@
+import os from "node:os";
 import fs from "node:fs";
+import path from "node:path";
+
+import { Domain } from "node:domain";
+import { PassThrough } from "node:stream";
+import { createServer } from "node:https";
+
 import ffmpeg from "fluent-ffmpeg";
 import { Server } from "socket.io";
-import { createServer } from "node:https";
-import path from "node:path";
-import { PassThrough } from "node:stream";
-import { Domain } from "node:domain";
 
 const VIDEO_OUTPUT_FOLDER = "./videos";
 const STATIC_DIR = "./client";
@@ -38,7 +41,29 @@ domain.on("error", (err) => {
 
 domain.run(() => {
     httpsServer.listen(SERVER_PORT, () => {
-        console.log(`Server running on port ${SERVER_PORT}`);
+        /**
+         * @type {{ network: string; ip: string; }[]}
+         */
+        const addresses = [];
+
+        Object.values(os.networkInterfaces()).forEach((interfaces) => {
+            interfaces?.map((host) => {
+                if (host.family === "IPv4") {
+                    addresses.push({
+                        network: host.internal ? "Local" : "Network",
+                        ip: host.address,
+                    });
+                }
+            });
+        });
+
+        console.log(`Streaming client available at:`);
+        addresses.forEach((address) => {
+            console.log(
+                `➡️${address.network}: https://${address.ip}:${SERVER_PORT}`
+            );
+        });
+        console.log("\nPress Ctrl+C to stop the server \n");
     });
 });
 
@@ -103,7 +128,7 @@ function endStream(id) {
  * @param {fs.PathOrFileDescriptor} filePath
  */
 function serveStaticFile(_req, response, filePath) {
-    fs.readFile(filePath, "utf8", (err, content) => {
+    fs.readFile(filePath, (err, content) => {
         if (err) {
             console.error("Error reading file:", err);
             response.writeHead(404);
@@ -112,33 +137,24 @@ function serveStaticFile(_req, response, filePath) {
         }
 
         const extname = path.extname(String(filePath));
-        let contentType = "text/plain";
+        
+        const mimeTypes = {
+            ".html": "text/html",
+            ".css": "text/css",
+            ".js": "application/javascript",
+            ".json": "application/json",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".gif": "image/gif",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
+            ".xml": "application/xml",
+            ".txt": "text/plain",
+            // Add more file types as needed
+        };
 
-        switch (extname) {
-            case ".html":
-                contentType = "text/html";
-                break;
-            case ".css":
-                contentType = "text/css";
-                break;
-            case ".js":
-                contentType = "application/javascript";
-                break;
-            case ".json":
-                contentType = "application/json";
-                break;
-            case ".png":
-                contentType = "image/png";
-                break;
-            case ".jpg":
-                contentType = "image/jpg";
-                break;
-            case ".gif":
-                contentType = "image/gif";
-                break;
-            default:
-                contentType = "text/plain";
-        }
+        // @ts-ignore
+        let contentType = mimeTypes[extname] || "text/plain";
 
         response.setHeader("Content-type", contentType);
         response.end(content);
