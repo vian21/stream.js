@@ -16,7 +16,19 @@ npm install
 ## Usage
 
 ```bash
-npm start
+deno run start
+```
+
+-   To start development server run:
+
+```bash
+deno run dev
+```
+
+-   To compile to a single file run:
+
+```bash
+deno compile -A index.js
 ```
 
 -   Visit your browser at `https://{HOST}:3000` (has to be over `HTTPS` because `getUserMedia` is only available on secure origins)
