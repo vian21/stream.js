@@ -201,10 +201,7 @@ async function flipCamera() {
     constraints.video.facingMode = frontFacing ? "user" : "environment";
 
     try {
-        if (recorder) {
-            recorder.stop();
-            recorder = null;
-        }
+        const prevRecorder = recorder;
         stopStream();
 
         // get new video stream
@@ -212,8 +209,12 @@ async function flipCamera() {
         if (videoCanvas) videoCanvas.srcObject = stream;
 
         if (!isRecording) return;
+
         // start new recording
         await recordStream(stream);
+
+        // stop previous recorder
+        prevRecorder?.stop();
     } catch (error) {
         console.error("[ERROR] changing camera:", error);
         tearDown();
