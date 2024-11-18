@@ -43,8 +43,13 @@ const VIDEO_BITRATE = {
     "720p": 6.5 * Mbits,
 };
 
+/** @type MediaStreamConstraints */
 const constraints = {
-    audio: true,
+    audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+    },
     video: {
         facingMode: frontFacing ? "user" : "environment",
         frameRate: 30,
@@ -206,6 +211,7 @@ async function flipCamera() {
     console.log("[TRACE] Flipping camera");
 
     frontFacing = !frontFacing;
+    // @ts-ignore
     constraints.video.facingMode = frontFacing ? "user" : "environment";
 
     try {
