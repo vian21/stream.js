@@ -12,10 +12,7 @@ let stream = null;
 let recorder = null;
 
 /** @type HTMLElement | null */
-let streamButton = null;
-
-/** @type HTMLElement | null */
-let flipCameraButton = null;
+let recordButton = null;
 
 /** @type HTMLVideoElement | null */
 let videoCanvas = null;
@@ -58,39 +55,26 @@ const constraints = {
     },
 };
 
+/** @type {MediaRecorderOptions} */
 const recorderOptions = {
     mimeType: "video/webm",
-    videoBitsPerSecond: VIDEO_BITRATE["1080p"],
+    videoBitsPerSecond: VIDEO_BITRATE["2K"],
     audioBitsPerSecond: AUDIO_BITRATE.MONO,
 };
 
 /**
  * @param {MediaStream} stream
  */
-async function startRecording(stream) {
+async function recordStream(stream) {
     console.log("Got stream with constraints:", constraints);
-
-    if (!videoCanvas) {
-        console.error("[ERROR] No video element found");
-        tearDown();
-        return;
-    }
-
-    videoCanvas.srcObject = stream;
 
     if (!MediaRecorder.isTypeSupported("video/webm")) {
         recorderOptions.mimeType = "video/mp4";
     }
 
-    socket.emit("start-stream", recorderOptions.mimeType);
-
     try {
         // https://support.google.com/youtube/answer/1722171#zippy=%2Cbitrate
-        recorder = new MediaRecorder(stream, {
-            mimeType: recorderOptions.mimeType,
-            videoBitsPerSecond: VIDEO_BITRATE["2K"],
-            audioBitsPerSecond: AUDIO_BITRATE.MONO,
-        });
+        recorder = new MediaRecorder(stream, recorderOptions);
     } catch (error) {
         socket.emit("end-stream");
         console.error(error);
@@ -99,15 +83,26 @@ async function startRecording(stream) {
     }
 
     recorder.ondataavailable = (event) => {
+        if (event.data.size === 0) return;
         socket.emit("data", event.data);
     };
 
-    recorder.onstop = (event) => {
-        console.log("[TRACE] stopping recording");
-        socket.emit("end-stream");
+    recorder.onstart = () => {
+        console.log("[TRACE] starting recording");
     };
 
-    recorder.start(1000);
+    recorder.onerror = (error) => {
+        console.error("[ERROR] recording:", error);
+        socket.emit("end-stream");
+
+        tearDown();
+    };
+
+    recorder.onstop = () => {
+        console.log("[TRACE] stopping recording");
+    };
+
+    recorder.start(100);
 }
 
 /**
@@ -144,40 +139,34 @@ function tearDown() {
     console.log("[TRACE] Tearing down stream");
     if (recorder) {
         recorder.stop();
-        recorder.stream.getTracks().forEach((track) => {
-            track.stop();
-        });
+        // wait a little before stopping the stream
+        setTimeout(() => socket.emit("end-stream"), 500);
     }
 
     isRecording = false;
     recorder = null;
-    stream = null;
 
-    if (streamButton && flipCameraButton) {
-        streamButton.innerHTML = "Start";
-        streamButton.style.backgroundColor = "green";
-        flipCameraButton.hidden = false;
+    if (recordButton) {
+        recordButton.innerHTML = "Start";
+        recordButton.style.backgroundColor = "green";
     }
-
-    startStreamPreview();
 }
 
-async function startStream() {
-    console.log(`[TRACE] ${isRecording ? "Stopping " : "Starting "} stream`);
+async function record() {
+    console.log(`[TRACE] ${isRecording ? "Stopping " : "Starting "} recording`);
     if (isRecording) {
         tearDown();
         return;
     }
 
     try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        await startRecording(stream);
+        await recordStream(await getStream());
+        socket.emit("start-stream", recorderOptions.mimeType);
 
         isRecording = true;
-        if (streamButton && flipCameraButton) {
-            streamButton.innerHTML = "Stop";
-            streamButton.style.backgroundColor = "red";
-            flipCameraButton.hidden = true;
+        if (recordButton) {
+            recordButton.innerHTML = "Stop";
+            recordButton.style.backgroundColor = "red";
         }
     } catch (e) {
         // @ts-ignore
@@ -205,9 +194,6 @@ function connectToServer() {
 }
 
 async function flipCamera() {
-    if (!videoCanvas || !stream || isRecording) {
-        return;
-    }
     console.log("[TRACE] Flipping camera");
 
     frontFacing = !frontFacing;
@@ -215,56 +201,71 @@ async function flipCamera() {
     constraints.video.facingMode = frontFacing ? "user" : "environment";
 
     try {
-        stream.getTracks().forEach((track) => {
-            track.stop();
-        });
+        if (recorder) {
+            recorder.stop();
+            recorder = null;
+        }
+        stopStream();
 
-        // show preview
+        // get new video stream
         stream = await navigator.mediaDevices.getUserMedia(constraints);
-        videoCanvas.srcObject = stream;
+        if (videoCanvas) videoCanvas.srcObject = stream;
+
+        if (!isRecording) return;
+        // start new recording
+        await recordStream(stream);
     } catch (error) {
         console.error("[ERROR] changing camera:", error);
         tearDown();
     }
 }
 
-async function startStreamPreview() {
-    if (!videoCanvas) return;
+/**
+ * @returns {Promise<MediaStream>}
+ */
+async function getStream() {
+    if (stream) return stream;
 
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    videoCanvas.srcObject = stream;
+    const _stream = await navigator.mediaDevices.getUserMedia(constraints);
+    stream = _stream;
+    if (videoCanvas) videoCanvas.srcObject = stream;
+
+    return _stream;
 }
 
-/**
- * @param {boolean} isRecording
- */
-function handleVisibilityChange(isRecording) {
+function stopStream() {
+    if (!stream) return;
+
+    stream.getTracks().forEach((track) => {
+        track.stop();
+    });
+    stream = null;
+}
+
+function handleVisibilityChange() {
     if (isRecording) return;
 
     if (document.hidden) {
-        stream?.getTracks().forEach((track) => {
-            track.stop();
-        });
-        stream = null;
+        stopStream();
     } else {
-        startStreamPreview();
+        getStream();
     }
 }
 
-window.onload = async () => {
+window.onload = () => {
     videoCanvas = document.querySelector("#videoCanvas");
-    streamButton = document.querySelector("#streamButton");
+    recordButton = document.querySelector("#streamButton");
 
-    streamButton?.addEventListener("click", () => startStream());
+    recordButton?.addEventListener("click", () => record());
 
-    flipCameraButton = document.querySelector("#flipCamera");
+    const flipCameraButton = document.querySelector("#flipCamera");
     flipCameraButton?.addEventListener("click", () => flipCamera());
 
     // show stream preview
-    startStreamPreview();
+    getStream();
 
     // stop preview when tab is inactive
-    document.onvisibilitychange = () => handleVisibilityChange(isRecording);
+    document.onvisibilitychange = () => handleVisibilityChange();
 
     connectToServer();
 };
