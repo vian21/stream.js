@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 #
-# Compress a video file using ffmpeg with libx265 codec
+# Compress a video file using ffmpeg with libx264 codec
 # Usage: compress <video_path>
 #
+# lib265 was not used because nobody uses it e.g. whatsapp, ...
+# It is not universally used like libx264.
+#
+# Interesting read: https://news.ycombinator.com/item?id=31317989
+#
 show_help() {
-    echo "Compress a video file using ffmpeg with libx265 codec"
+    echo "Compress a video file using ffmpeg with libx264 codec"
     echo "Usage: $(basename "$0") [-h] [-s <speed>] <video_path>"
     echo "  -h  Show this help message"
     echo "  -s  Set compression speed (1-7):"
-    echo "      1 - ultrafast (default)"
+    echo "      1 - ultrafast"
     echo "      2 - superfast"
-    echo "      3 - veryfast"
+    echo "      3 - veryfast (default)"
     echo "      4 - faster"
     echo "      5 - fast"
     echo "      6 - medium"
@@ -22,7 +27,7 @@ if [ $# -eq 0 ]; then
     exit 0
 fi
 
-preset="ultrafast"
+preset="veryfast"
 
 while getopts ":hs:" opt; do
     case ${opt} in
@@ -69,8 +74,8 @@ fi
 
 output_path="${video_path%.*}_compressed.${video_path##*.}"
 
-echo "ffmpeg -i \"$video_path\" -c:v libx265 -crf 28 -preset \"$preset\" -c:a copy \"$output_path\""
-ffmpeg -i "$video_path" -c:v libx265 -crf 28 -preset "$preset" -c:a copy "$output_path"
+echo "ffmpeg -i \"$video_path\" -c:v libx264 -preset \"$preset\" -c:a copy \"$output_path\""
+ffmpeg -i "$video_path" -c:v libx264 -preset "$preset" -c:a copy "$output_path"
 
 if [[ $? -eq 0 ]]; then
     echo "Compression completed successfully: $output_path"
