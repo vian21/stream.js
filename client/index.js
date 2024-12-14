@@ -40,12 +40,17 @@ const VIDEO_BITRATE = {
     "720p": 6.5 * Mbits,
 };
 
-/** @type MediaStreamConstraints */
+/**
+ * @type MediaStreamConstraints
+ * https://webthesis.biblio.polito.it/16659/1/tesi.pdf
+ * */
 const constraints = {
     audio: {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
+        // @ts-ignore
+        latency: 0,
     },
     video: {
         facingMode: frontFacing ? "user" : "environment",
