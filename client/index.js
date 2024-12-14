@@ -46,6 +46,7 @@ const VIDEO_BITRATE = {
  * */
 const constraints = {
     audio: {
+        channelCount: 1,
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
