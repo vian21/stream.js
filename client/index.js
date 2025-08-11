@@ -3,6 +3,8 @@
 // https://web.dev/articles/webrtc-basics
 // https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia
 let frontFacing = true;
+
+// Is MediaRecorder still recording?
 let isRecording = false;
 
 /** @type MediaStream | null */
@@ -40,6 +42,29 @@ const VIDEO_BITRATE = {
     "720p": 6.5 * Mbits,
 };
 
+const VIDEO_RESOLUTION = {
+    SD_480P: {
+        width: 854,
+        height: 480,
+    },
+    HD_720P: {
+        width: 1280,
+        height: 720,
+    },
+    FHD_1080P: {
+        width: 1920,
+        height: 1080,
+    },
+    QHD_1440P: {
+        width: 2560,
+        height: 1440,
+    },
+    UHD_4K: {
+        width: 3840,
+        height: 2160,
+    },
+};
+
 /**
  * @type MediaStreamConstraints
  * https://webthesis.biblio.polito.it/16659/1/tesi.pdf
@@ -47,24 +72,24 @@ const VIDEO_BITRATE = {
 const constraints = {
     audio: {
         channelCount: 1,
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
+        // echoCancellation: false,
+        // noiseSuppression: false,
+        // autoGainControl: false,
         // @ts-ignore
         latency: 0,
     },
     video: {
         facingMode: frontFacing ? "user" : "environment",
-        frameRate: 30,
-        width: { ideal: 4096 },
-        height: { ideal: 2160 },
+        frameRate: { ideal: 60 },
+        width: { ideal: VIDEO_RESOLUTION.FHD_1080P.width },
+        height: { ideal: VIDEO_RESOLUTION.FHD_1080P.height },
     },
 };
 
 /** @type {MediaRecorderOptions} */
 const recorderOptions = {
     mimeType: "video/webm",
-    videoBitsPerSecond: VIDEO_BITRATE["2K"],
+    videoBitsPerSecond: VIDEO_BITRATE["1080p"],
     audioBitsPerSecond: AUDIO_BITRATE.MONO,
 };
 
@@ -90,7 +115,8 @@ async function recordStream(stream) {
 
     recorder.ondataavailable = (event) => {
         if (event.data.size === 0) return;
-        socket.emit("data", event.data);
+
+        setTimeout(() => socket.emit("data", event.data), 0);
     };
 
     recorder.onstart = () => {
@@ -99,13 +125,15 @@ async function recordStream(stream) {
 
     recorder.onerror = (error) => {
         console.error("[ERROR] recording:", error);
-        socket.emit("end-stream");
 
+        socket.emit("end-stream");
         tearDown();
     };
 
     recorder.onstop = () => {
         console.log("[TRACE] stopping recording");
+
+        setTimeout(() => socket.emit("end-stream"), 1000);
     };
 
     recorder.start(100);
@@ -144,9 +172,8 @@ function errorMsg(msg) {
 function tearDown() {
     console.log("[TRACE] Tearing down stream");
     if (recorder) {
+        recorder.requestData();
         recorder.stop();
-        // wait a little before stopping the stream
-        setTimeout(() => socket.emit("end-stream"), 500);
     }
 
     isRecording = false;
@@ -170,6 +197,7 @@ async function record() {
         socket.emit("start-stream", recorderOptions.mimeType);
 
         isRecording = true;
+
         if (recordButton) {
             recordButton.innerHTML = "Stop";
             recordButton.style.backgroundColor = "red";
@@ -183,7 +211,9 @@ async function record() {
 
 function connectToServer() {
     // @ts-ignore
-    socket = io();
+    socket = io({
+        // binaryType: "arraybuffer",
+    });
 
     socket.on("connect", () => {
         console.log(

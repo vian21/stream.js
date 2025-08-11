@@ -69,6 +69,8 @@ domain.run(() => {
 
 const io = new Server(httpsServer, {
     maxHttpBufferSize: 1e8,
+    pingInterval: 5000,
+    pingTimeout: 10_000,
 });
 
 /** @type {Map<string, RecordingStream>} */
@@ -93,6 +95,7 @@ io.on("connection", (socket) => {
             console.error(`[ERROR] Could not find client ${socket.id}`);
             return;
         }
+
         client.data.push(data);
     });
 
@@ -137,7 +140,7 @@ function serveStaticFile(_req, response, filePath) {
         }
 
         const extname = path.extname(String(filePath));
-        
+
         const mimeTypes = {
             ".html": "text/html",
             ".css": "text/css",
