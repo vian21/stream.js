@@ -84,7 +84,10 @@ io.on("connection", (socket) => {
 
     socket.on("start-stream", (encoding) => {
         console.log(`starting stream: ${socket.id}`);
-        const stream = startRecording(socket.id, encoding.split("/")[1]);
+        const stream = startRecording(
+            socket.id,
+            encoding.split(";")[0].split("/")[1]
+        );
         clients.set(socket.id, stream);
     });
 
@@ -116,7 +119,6 @@ io.on("connection", (socket) => {
 function endStream(id) {
     const client = clients.get(id);
     if (!client) {
-        console.log(`[INFO] Client ${id} was not streaming`);
         return;
     }
 
@@ -224,11 +226,15 @@ function recordStream(stream, mime) {
         })
         .output(stream.recordPath)
         .outputOptions([
-            "-preset ultrafast", // Encoding:compression speed (ultrafast->superfast->veryfast->faster->fast->medium->slow->slower->veryslow)
+            "-preset veryfast", // Encoding:compression speed (ultrafast->superfast->veryfast->faster->fast->medium->slow->slower->veryslow)
             "-tune zerolatency",
             "-vcodec libx264", // libx265 uses less space but is slower. (https://www.reddit.com/r/ffmpeg/comments/idr0ud/comment/g2bff2f/)
+            "-crf 20",
+            "-profile:v high",
+            "-pix_fmt yuv420p",
             "-movflags frag_keyframe+empty_moov",
-        ]);
+        ])
+        .videoFilters(["fps=30"]);
 
     process.run();
 

@@ -24,24 +24,6 @@ let videoCanvas = null;
  */
 let socket = null;
 
-const Kbits = 1e3;
-const Mbits = 1e6;
-
-const AUDIO_BITRATE = {
-    LOSSLESS: 1411.2 * Kbits,
-    SURROUND: 512 * Kbits,
-    STEREO: 384 * Kbits,
-    MONO: 128 * Kbits,
-};
-
-const VIDEO_BITRATE = {
-    "8K": 100 * Mbits,
-    "4K": 44 * Mbits,
-    "2K": 20 * Mbits,
-    "1080p": 10 * Mbits,
-    "720p": 6.5 * Mbits,
-};
-
 const VIDEO_RESOLUTION = {
     SD_480P: {
         width: 854,
@@ -80,16 +62,44 @@ const constraints = {
     },
     video: {
         facingMode: frontFacing ? "user" : "environment",
-        frameRate: { ideal: 60 },
+        frameRate: { ideal: 30, max: 30 },
         width: { ideal: VIDEO_RESOLUTION.FHD_1080P.width },
         height: { ideal: VIDEO_RESOLUTION.FHD_1080P.height },
     },
 };
 
+const preferredMimes = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+];
+
+const Kbits = 1e3;
+const Mbits = 1e6;
+
+const AUDIO_BITRATE = {
+    LOSSLESS: 1411.2 * Kbits,
+    SURROUND: 512 * Kbits,
+    STEREO: 384 * Kbits,
+    MONO: 128 * Kbits,
+};
+
+const VIDEO_BITRATE = {
+    "8K": 100 * Mbits,
+    "4K": 44 * Mbits,
+    "2K": 20 * Mbits,
+    "1080p": 10 * Mbits,
+    "720p": 6.5 * Mbits,
+};
+
 /** @type {MediaRecorderOptions} */
 const recorderOptions = {
-    mimeType: "video/webm",
-    videoBitsPerSecond: VIDEO_BITRATE["1080p"],
+    mimeType:
+        preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) ||
+        "video/webm",
+    videoBitsPerSecond: VIDEO_BITRATE["720p"],
     audioBitsPerSecond: AUDIO_BITRATE.MONO,
 };
 
@@ -98,10 +108,6 @@ const recorderOptions = {
  */
 async function recordStream(stream) {
     console.log("Got stream with constraints:", constraints);
-
-    if (!MediaRecorder.isTypeSupported("video/webm")) {
-        recorderOptions.mimeType = "video/mp4";
-    }
 
     try {
         // https://support.google.com/youtube/answer/1722171#zippy=%2Cbitrate
@@ -133,10 +139,10 @@ async function recordStream(stream) {
     recorder.onstop = () => {
         console.log("[TRACE] stopping recording");
 
-        setTimeout(() => socket.emit("end-stream"), 1000);
+        if (!isRecording) setTimeout(() => socket.emit("end-stream"), 2000);
     };
 
-    recorder.start(100);
+    recorder.start(1000);
 }
 
 /**
@@ -171,12 +177,14 @@ function errorMsg(msg) {
 
 function tearDown() {
     console.log("[TRACE] Tearing down stream");
+
+    isRecording = false;
+
     if (recorder) {
         recorder.requestData();
         recorder.stop();
     }
 
-    isRecording = false;
     recorder = null;
 
     if (recordButton) {
