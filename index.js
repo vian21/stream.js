@@ -232,6 +232,9 @@ function recordStream(stream, mime) {
             "-crf 20",
             "-profile:v high",
             "-pix_fmt yuv420p",
+            "-b:v 10M", // Video bitrate
+            "-bufsize 5M",
+            "-b:a 128k", // Audio bitrate
             "-movflags frag_keyframe+empty_moov",
         ])
         .videoFilters(["fps=30"]);

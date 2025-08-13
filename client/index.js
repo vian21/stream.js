@@ -99,7 +99,7 @@ const recorderOptions = {
     mimeType:
         preferredMimes.find((m) => MediaRecorder.isTypeSupported(m)) ||
         "video/webm",
-    videoBitsPerSecond: VIDEO_BITRATE["720p"],
+    videoBitsPerSecond: VIDEO_BITRATE["1080p"],
     audioBitsPerSecond: AUDIO_BITRATE.MONO,
 };
 
