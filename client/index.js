@@ -54,9 +54,9 @@ const VIDEO_RESOLUTION = {
 const constraints = {
     audio: {
         channelCount: 1,
-        // echoCancellation: false,
-        // noiseSuppression: false,
-        // autoGainControl: false,
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
         // @ts-ignore
         latency: 0,
     },
