@@ -226,18 +226,23 @@ function recordStream(stream, mime) {
         })
         .output(stream.recordPath)
         .outputOptions([
-            "-preset veryfast", // Encoding:compression speed (ultrafast->superfast->veryfast->faster->fast->medium->slow->slower->veryslow)
+            "-preset veryfast",
             "-tune zerolatency",
-            "-vcodec libx264", // libx265 uses less space but is slower. (https://www.reddit.com/r/ffmpeg/comments/idr0ud/comment/g2bff2f/)
+            "-vcodec libx264",
             "-crf 20",
             "-profile:v high",
             "-pix_fmt yuv420p",
-            "-b:v 10M", // Video bitrate
+            "-b:v 10M",
             "-bufsize 5M",
-            "-b:a 128k", // Audio bitrate
+            "-c:a aac",
+            "-b:a 128k",
             "-movflags frag_keyframe+empty_moov",
         ])
-        .videoFilters(["fps=30"]);
+        // .audioFilters(['loudnorm'])
+        .videoFilters([
+            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "fps=30",
+        ]);
 
     process.run();
 

@@ -103,6 +103,11 @@ const recorderOptions = {
     audioBitsPerSecond: AUDIO_BITRATE.MONO,
 };
 
+function updateStatus(msg) {
+    const statusEl = document.querySelector("#status");
+    if (statusEl) statusEl.innerText = msg;
+}
+
 /**
  * @param {MediaStream} stream
  */
@@ -122,16 +127,17 @@ async function recordStream(stream) {
     recorder.ondataavailable = (event) => {
         if (event.data.size === 0) return;
 
-        setTimeout(() => socket.emit("data", event.data), 0);
+        socket.emit("data", event.data);
     };
 
     recorder.onstart = () => {
         console.log("[TRACE] starting recording");
+        updateStatus("Streaming...");
     };
 
     recorder.onerror = (error) => {
         console.error("[ERROR] recording:", error);
-
+        updateStatus("Error!");
         socket.emit("end-stream");
         tearDown();
     };
@@ -139,10 +145,13 @@ async function recordStream(stream) {
     recorder.onstop = () => {
         console.log("[TRACE] stopping recording");
 
-        if (!isRecording) setTimeout(() => socket.emit("end-stream"), 2000);
+        if (!isRecording) {
+            updateStatus("Stopped");
+            setTimeout(() => socket.emit("end-stream"), 2000);
+        }
     };
 
-    recorder.start(1000);
+    recorder.start(100);
 }
 
 /**
@@ -245,20 +254,21 @@ async function flipCamera() {
     constraints.video.facingMode = frontFacing ? "user" : "environment";
 
     try {
-        const prevRecorder = recorder;
+        if (isRecording && recorder) {
+            recorder.requestData();
+            recorder.stop();
+        }
+
         stopStream();
 
         // get new video stream
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (videoCanvas) videoCanvas.srcObject = stream;
+        const newStream = await getStream();
+        if (videoCanvas) videoCanvas.srcObject = newStream;
 
-        if (!isRecording) return;
-
-        // start new recording
-        await recordStream(stream);
-
-        // stop previous recorder
-        prevRecorder?.stop();
+        if (isRecording && newStream) {
+            // start new recording with the new stream
+            await recordStream(newStream);
+        }
     } catch (error) {
         console.error("[ERROR] changing camera:", error);
         tearDown();
@@ -274,6 +284,7 @@ async function getStream() {
     const _stream = await navigator.mediaDevices.getUserMedia(constraints);
     stream = _stream;
     if (videoCanvas) videoCanvas.srcObject = stream;
+    updateStatus("Ready");
 
     return _stream;
 }
