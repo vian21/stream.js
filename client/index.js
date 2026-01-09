@@ -1,233 +1,174 @@
-// https://web.dev/articles/webrtc-basics
-// https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getUserMedia
-let frontFacing = true;
+"use strict";
+
 let isRecording = false;
-
-/** @type MediaRecorder | null */
-let recorder = null;
-
-/**
- * @type {MediaSwitcher}
- */
-const mediaSwitcher = new MediaSwitcher();
-
-/** @type HTMLElement | null */
-let streamButton = null;
-
-/** @type HTMLVideoElement | null */
-let videoCanvas = null;
-
-/**
- * @type {any}
- */
 let socket = null;
+let mediaRecorder = null;
+let localStream = null;
+let frontFacing = true;
 
-const Kbits = 1e3;
-const Mbits = 1e6;
+let videoCanvas = null;
+let streamButton = null;
+let flipCameraButton = null;
+let errorMsgElement = null;
 
-const AUDIO_BITRATE = {
-    LOSSLESS: 1411.2 * Kbits,
-    SURROUND: 512 * Kbits,
-    STEREO: 384 * Kbits,
-    MONO: 128 * Kbits,
-};
-
-const VIDEO_BITRATE = {
-    "8K": 100 * Mbits,
-    "4K": 44 * Mbits,
-    "2K": 20 * Mbits,
-    "1080p": 10 * Mbits,
-    "720p": 6.5 * Mbits,
-};
+const VIDEO_BITRATE = 10 * 1024 * 1024; // 10 Mbps for HD quality
 
 const constraints = {
-    audio: true,
-    video: {
-        facingMode: frontFacing ? "user" : "environment",
-        frameRate: 30,
-        width: { ideal: 4096 },
-        height: { ideal: 2160 },
+    audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
     },
+    video: {
+        facingMode: "user",
+        frameRate: { ideal: 30, max: 30 },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        aspectRatio: { ideal: 1.777777778 }
+    }
 };
 
-const recorderOptions = {
-    mimeType: "video/webm",
-    videoBitsPerSecond: VIDEO_BITRATE["1080p"],
-    audioBitsPerSecond: AUDIO_BITRATE.MONO,
-};
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-/**
- * @param {MediaStream} stream
- */
-async function startRecording(stream) {
-    console.log("Got stream with constraints:", constraints);
-
-    if (!videoCanvas) {
-        console.error("[ERROR] No video element found");
-        tearDown();
-        return;
-    }
-
-    if (!MediaRecorder.isTypeSupported("video/webm")) {
-        recorderOptions.mimeType = "video/mp4";
-    }
-
-    socket.emit("start-stream", recorderOptions.mimeType);
-
-    try {
-        const switcher_stream = await mediaSwitcher.initialize(
-            stream,
-            recorderOptions
-        );
-        console.log("[TRACE] MediaSwitcher initialized");
-
-        // https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/dataavailable_event
-        // [Important] Data has to be consumed from the stream for the `dataavailable` event to trigger
-        videoCanvas.srcObject = switcher_stream;
-
-        // https://support.google.com/youtube/answer/1722171#zippy=%2Cbitrate
-        recorder = new MediaRecorder(switcher_stream, recorderOptions);
-
-        recorder.ondataavailable = (event) => {
-            socket.emit("data", event.data);
-        };
-
-        recorder.onstop = () => {
-            socket.emit("end-stream");
-        };
-
-        recorder.start(1000);
-        console.log("[TRACE] MediaRecorder started");
-    } catch (error) {
-        socket.emit("end-stream");
-        console.error(error);
-        tearDown();
-        return;
+function displayError(msg) {
+    console.error(msg);
+    if (errorMsgElement) {
+        errorMsgElement.innerHTML += `<p style="color: red;">${msg}</p>`;
     }
 }
 
-/**
- * @param {Error} error
- */
-function displayError(error) {
-    console.error(error);
-
-    if (error.name === "OverconstrainedError") {
-        errorMsg(
-            `OverconstrainedError: The constraints could not be satisfied by the available devices. Constraints: ${JSON.stringify(
-                constraints
-            )}`
-        );
-    } else if (error.name === "NotAllowedError") {
-        errorMsg(
-            "NotAllowedError: The user has denied permission to use media devices"
-        );
-    }
-    errorMsg(`Error: ${error.message}`);
+async function initSocket() {
+    socket = io();
+    socket.on("connect", () => console.log("[SOCKET] Connected"));
 }
 
-/**
- * @param {string} msg
- */
-function errorMsg(msg) {
-    const errorElement = document.querySelector("#errorMsg");
-    if (errorElement) {
-        errorElement.innerHTML += `<p>${msg}</p>`;
-    }
-}
-
-function tearDown() {
-    console.log("[TRACE] Tearing down stream");
-    if (recorder) {
-        recorder.stop();
-        mediaSwitcher.close();
-    }
-
-    isRecording = false;
-    recorder = null;
-
-    if (streamButton) {
-        streamButton.innerHTML = "Start";
-    }
-
-    if (videoCanvas) {
-        videoCanvas.srcObject = null;
-    }
-}
-
-async function startStream() {
-    console.log(`[TRACE] ${isRecording ? "Stopping " : "Starting "} stream`);
-    if (isRecording) {
-        tearDown();
-        return;
-    }
-
+async function getStream() {
+    if (localStream) return localStream;
     try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        await startRecording(stream);
-
-        isRecording = true;
-        if (streamButton) {
-            streamButton.innerHTML = "Stop";
-        }
-    } catch (e) {
-        // @ts-ignore
-        displayError(e);
-        console.error("[ERROR]", e);
+        localStream = stream;
+        if (videoCanvas) videoCanvas.srcObject = localStream;
+        return stream;
+    } catch (err) {
+        displayError(`Camera access failed: ${err.message}`);
+        return null;
     }
 }
 
-function connectToServer() {
-    // @ts-ignore
-    socket = io();
+async function startRecording() {
+    if (isRecording) return;
+    const stream = await getStream();
+    if (!stream) return;
 
-    socket.on("connect", () => {
-        console.log(
-            `connected with transport ${socket.io.engine.transport.name}`
-        );
-    });
+    socket.emit("start-stream");
 
-    socket.on("disconnect", (/** @type {String} */ reason) => {
-        console.log(`disconnect due to ${reason}`);
-        if (isRecording) {
-            tearDown();
+    const options = { mimeType: 'video/webm;codecs=vp9,opus', videoBitsPerSecond: VIDEO_BITRATE };
+
+    // Fallback for browsers that don't support VP9
+    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        options.mimeType = 'video/webm;codecs=vp8,opus';
+    }
+
+    mediaRecorder = new MediaRecorder(stream, options);
+
+    mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+            socket.emit("video-chunk", event.data);
         }
-    });
+    };
+
+    mediaRecorder.onstop = () => {
+        if (!isRecording) {
+            console.log("[TRACE] MediaRecorder stopped, waiting for final flush...");
+            if (socket) {
+                console.log("[TRACE] Sending final stop-stream signal");
+                socket.emit("stop-stream");
+            }
+        } else {
+            console.log("[TRACE] MediaRecorder stopped (likely camera flip), not sending stop-stream");
+        }
+    };
+
+    // 100ms chunks for low latency delivery to server
+    mediaRecorder.start(100);
+
+    isRecording = true;
+    streamButton.innerText = "Stop";
+    streamButton.style.backgroundColor = "red";
+}
+
+function stopRecording() {
+    isRecording = false;
+    if (mediaRecorder) {
+        // Force an immediate buffer dump and then stop
+        mediaRecorder.requestData();
+
+        // KEEP: requestData doesnt return the data directly. delay mediarecorder stop
+        sleep(2000).then(() => {
+            mediaRecorder.stop();
+            mediaRecorder = null;
+        })
+    } else if (socket) {
+        // Fallback if recorder was already null
+        alert("recorder null")
+        socket.emit("stop-stream");
+    }
+    streamButton.innerText = "Start";
+    streamButton.style.backgroundColor = "green";
+}
+
+async function toggleRecording() {
+    if (isRecording) stopRecording();
+    else await startRecording();
 }
 
 async function flipCamera() {
-    if (!isRecording || !videoCanvas) {
-        return;
-    }
-    console.log("[TRACE] Flipping camera");
-
     frontFacing = !frontFacing;
     constraints.video.facingMode = frontFacing ? "user" : "environment";
 
-    try {
-        mediaSwitcher.getCurrentStreamTracks().forEach(async (track) => {
-            console.log(`[TRACE] Stopping ${track?.kind} track`);
-            track?.stop();
-        });
+    if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+    }
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log("[INFO] Got new stream with constraints:", constraints);
+    const newStream = await getStream();
+    if (isRecording && newStream) {
+        // Stop current recorder and start new one with new stream
+        if (mediaRecorder) {
+            mediaRecorder.requestData();
+            mediaRecorder.stop();
+        }
 
-        mediaSwitcher.changeStream(stream);
-    } catch (error) {
-        console.error("[ERROR] changing camera:", error);
-        tearDown();
+        const options = { mimeType: 'video/webm;codecs=vp9,opus', videoBitsPerSecond: VIDEO_BITRATE };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) options.mimeType = 'video/webm;codecs=vp8,opus';
+
+        mediaRecorder = new MediaRecorder(newStream, options);
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) socket.emit("video-chunk", event.data);
+        };
+        mediaRecorder.onstop = () => {
+            if (!isRecording) {
+                console.log("[TRACE] MediaRecorder (flip) stopped, waiting for final flush...");
+                if (socket) {
+                    console.log("[TRACE] Sending final stop-stream signal");
+                    socket.emit("stop-stream");
+                }
+            }
+        };
+        mediaRecorder.start(100);
     }
 }
 
 window.onload = () => {
     videoCanvas = document.querySelector("#videoCanvas");
     streamButton = document.querySelector("#streamButton");
+    flipCameraButton = document.querySelector("#flipCamera");
+    errorMsgElement = document.querySelector("#errorMsg");
 
-    streamButton?.addEventListener("click", () => startStream());
-
-    const flipCameraButton = document.querySelector("#flipCamera");
-    flipCameraButton?.addEventListener("click", () => flipCamera());
-
-    connectToServer();
+    initSocket();
+    streamButton.addEventListener("click", toggleRecording);
+    flipCameraButton.addEventListener("click", flipCamera);
+    getStream();
 };

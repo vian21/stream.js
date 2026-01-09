@@ -1,18 +1,23 @@
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-
-import { Domain } from "node:domain";
 import { PassThrough } from "node:stream";
 import { createServer } from "node:https";
+import { spawn } from "node:child_process";
 
-import ffmpeg from "fluent-ffmpeg";
+import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { Server } from "socket.io";
+
+const FFMPEG_PATH = ffmpegInstaller.path;
+console.log(`[INIT] FFmpeg path: ${FFMPEG_PATH}`);
 
 const VIDEO_OUTPUT_FOLDER = "./videos";
 const STATIC_DIR = "./client";
-
 const SERVER_PORT = process.env.PORT || 3000;
+
+if (!fs.existsSync(VIDEO_OUTPUT_FOLDER)) {
+    fs.mkdirSync(VIDEO_OUTPUT_FOLDER);
+}
 
 const httpsOptions = {
     key: fs.readFileSync("./certs/key.pem"),
@@ -30,213 +35,117 @@ const httpsServer = createServer(httpsOptions, (request, response) => {
         STATIC_DIR,
         url === "/" ? "index.html" : url.slice(1)
     );
-
     serveStaticFile(request, response, filePath);
 });
 
-const domain = new Domain();
-domain.on("error", (err) => {
-    console.error("Domain error:", err);
-});
-
-domain.run(() => {
-    httpsServer.listen(SERVER_PORT, () => {
-        /**
-         * @type {{ network: string; ip: string; }[]}
-         */
-        const addresses = [];
-
-        Object.values(os.networkInterfaces()).forEach((interfaces) => {
-            interfaces?.map((host) => {
-                if (host.family === "IPv4") {
-                    addresses.push({
-                        network: host.internal ? "Local" : "Network",
-                        ip: host.address,
-                    });
-                }
-            });
-        });
-
-        console.log(`Streaming client available at:`);
-        addresses.forEach((address) => {
-            console.log(
-                `➡️${address.network}: https://${address.ip}:${SERVER_PORT}`
-            );
-        });
-        console.log("\nPress Ctrl+C to stop the server \n");
-    });
-});
-
 const io = new Server(httpsServer, {
-    maxHttpBufferSize: 1e8,
+    maxHttpBufferSize: 1e8, // 100MB
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-/** @type {Map<string, RecordingStream>} */
-const clients = new Map();
+const activeConnections = new Map();
 
 io.on("connection", (socket) => {
-    console.log(`connected to ${socket.id}`);
-    socket.conn.on("upgrade", (transport) => {
-        console.debug(`transport upgraded to ${transport.name}`);
+    console.log(`[INFO] Client connected: ${socket.id}`);
+
+    socket.on("start-stream", () => {
+        if (activeConnections.has(socket.id)) return;
+
+        const recordPath = `${VIDEO_OUTPUT_FOLDER}/stream-${getTimestamp()}-${socket.id}.mp4`;
+        console.log(`[REC] Starting continuous recording: ${recordPath}`);
+
+        const inputStream = new PassThrough();
+        
+        // FFmpeg args to handle variable resolution and mid-stream header resets
+        const args = [
+            "-loglevel", "info",
+            "-thread_queue_size", "1024",
+            "-i", "pipe:0",
+            // Video normalization: scale and pad to 1080p to handle camera flips/orientation
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "20",
+            "-b:v", "10M",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            "-y",
+            recordPath
+        ];
+
+        const ffmpegProc = spawn(FFMPEG_PATH, args);
+
+        ffmpegProc.stderr.on("data", (data) => {
+            const msg = data.toString();
+            if (msg.includes("Error") || msg.includes("error")) {
+                console.error(`[FFMPEG ERROR] ${socket.id}: ${msg.trim()}`);
+            }
+        });
+
+        ffmpegProc.on("close", (code) => {
+            console.log(`[REC] FFmpeg process closed for ${socket.id} with code ${code}`);
+            if (code === 0) {
+                console.log(`[SUCCESS] Video saved: ${recordPath}`);
+            }
+            activeConnections.delete(socket.id);
+        });
+
+        inputStream.pipe(ffmpegProc.stdin);
+
+        activeConnections.set(socket.id, {
+            ffmpegProc,
+            inputStream,
+            recordPath
+        });
     });
 
-    socket.on("start-stream", (encoding) => {
-        console.log(`starting stream: ${socket.id}`);
-        const stream = startRecording(socket.id, encoding.split("/")[1]);
-        clients.set(socket.id, stream);
-    });
-
-    socket.on("data", (data) => {
-        console.log(`Received data from ${socket.id}: ${data.length} bytes`);
-        const client = clients.get(socket.id);
-        if (!client) {
-            console.error(`[ERROR] Could not find client ${socket.id}`);
-            return;
+    socket.on("video-chunk", (data) => {
+        const state = activeConnections.get(socket.id);
+        if (state && state.inputStream.writable) {
+            state.inputStream.write(Buffer.from(data));
         }
-        client.data.push(data);
     });
 
-    socket.on("end-stream", () => {
-        console.log(`[INFO] Ending stream: ${socket.id}`);
-        endStream(socket.id);
+    socket.on("stop-stream", () => {
+        handleCleanup(socket.id);
     });
 
-    socket.on("disconnect", (reason) => {
-        console.error(`Disconnected to ${socket.id} due to ${reason}`);
-        endStream(socket.id);
+    socket.on("disconnect", () => {
+        handleCleanup(socket.id);
     });
 });
 
-/**
- * @param {string} id
- */
-function endStream(id) {
-    const client = clients.get(id);
-    if (!client) {
-        console.log(`[INFO] Client ${id} was not streaming`);
-        return;
+function handleCleanup(id) {
+    const state = activeConnections.get(id);
+    if (!state) return;
+
+    console.log(`[INFO] Cleaning up connection for ${id}`);
+    
+    if (state.inputStream.writable) {
+        state.inputStream.end();
     }
 
-    console.log("[INFO] Merging stream segments together ...");
-    client.data.end();
-    clients.delete(id);
+    // Process is deleted only when FFmpeg actually closes
+    // This ensures all buffers are flushed to the MP4 file
 }
 
-/**
- * @param {import("http").IncomingMessage} _req
- * @param {import("http").ServerResponse<import("http").IncomingMessage> & { req: import("http").IncomingMessage; }} response
- * @param {fs.PathOrFileDescriptor} filePath
- */
-function serveStaticFile(_req, response, filePath) {
-    fs.readFile(filePath, "utf8", (err, content) => {
+function serveStaticFile(req, response, filePath) {
+    fs.readFile(filePath, (err, content) => {
         if (err) {
-            console.error("Error reading file:", err);
             response.writeHead(404);
             response.end("Not found");
             return;
         }
-
-        const extname = path.extname(String(filePath));
-        let contentType = "text/plain";
-
-        switch (extname) {
-            case ".html":
-                contentType = "text/html";
-                break;
-            case ".css":
-                contentType = "text/css";
-                break;
-            case ".js":
-                contentType = "application/javascript";
-                break;
-            case ".json":
-                contentType = "application/json";
-                break;
-            case ".png":
-                contentType = "image/png";
-                break;
-            case ".jpg":
-                contentType = "image/jpg";
-                break;
-            case ".gif":
-                contentType = "image/gif";
-                break;
-            default:
-                contentType = "text/plain";
-        }
-
-        response.setHeader("Content-type", contentType);
+        const ext = path.extname(filePath);
+        const mimeTypes = { ".html": "text/html", ".css": "text/css", ".js": "application/javascript", ".svg": "image/svg+xml" };
+        response.writeHead(200, { "Content-Type": mimeTypes[ext] || "text/plain" });
         response.end(content);
     });
 }
 
-/**
- * Represents a media stream object.
- *
- * @typedef {Object} RecordingStream
- * @property {string} id - client ID
- * @property {string} recordPath - The file path where the stream will be recorded.
- * @property {PassThrough} data - data buffer.
- * @property {boolean} recordEnd - Indicates whether the FFMPEG recording has ended.
- * @property {boolean} end - Indicates whether the WebRTC stream has ended.
- */
+function getTimestamp() { return new Date().toISOString().replace(/[:.]/g, "-"); }
 
-/**
- * @param {string} id - Client ID
- * @param {string} encoding - The video encoding of the media recorder data.
- * @returns {RecordingStream}
- * */
-function startRecording(id, encoding) {
-    /** @type {RecordingStream} */
-    const stream = {
-        id,
-        recordPath: `${VIDEO_OUTPUT_FOLDER}/stream-${getTimestamp()}.mp4`,
-        data: new PassThrough(),
-        recordEnd: false,
-        end: false,
-    };
-
-    recordStream(stream, encoding);
-
-    return stream;
-}
-
-function getTimestamp() {
-    return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-/**
- * @param {RecordingStream} stream
- * @param {string} mime
- *
- * @returns {ffmpeg.FfmpegCommand}
- */
-function recordStream(stream, mime) {
-    const process = ffmpeg()
-        .addInput(stream.data)
-        .addInputOptions([`-f ${mime}`])
-        .on("start", (command) => {
-            console.log("[Starting] recording >> ", stream.recordPath);
-            console.log(command);
-        })
-        .on("error", (err, stdout, stderr) => {
-            console.error("Error processing video:", err.message);
-            console.error("FFmpeg output:", stdout);
-            console.error("FFmpeg error:", stderr);
-        })
-        .on("end", () => {
-            stream.recordEnd = true;
-            console.log("[Stopping] recording >> ", stream.recordPath);
-        })
-        .output(stream.recordPath)
-        .outputOptions([
-            "-preset ultrafast", // Encoding:compression speed (ultrafast->superfast->veryfast->faster->fast->medium->slow->slower->veryslow)
-            "-tune zerolatency",
-            "-vcodec libx264", // libx265 uses less space but is slower. (https://www.reddit.com/r/ffmpeg/comments/idr0ud/comment/g2bff2f/)
-            "-movflags frag_keyframe+empty_moov",
-        ]);
-
-    process.run();
-
-    return process;
-}
+httpsServer.listen(SERVER_PORT, "0.0.0.0", () => {
+    console.log(`Server running at https://localhost:${SERVER_PORT}`);
+});
